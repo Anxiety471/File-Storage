@@ -1,4 +1,4 @@
-//! MCP server. Tool names carry the `mnemo_` prefix.
+//! MCP server. Tool names carry the `drawer_` prefix.
 use rmcp::{
     ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -7,16 +7,16 @@ use rmcp::{
 };
 use serde::Deserialize;
 
-use crate::service::Mnemo;
+use crate::service::Drawer;
 
 #[derive(Clone)]
-pub struct MnemoMcp {
-    svc: Mnemo,
+pub struct DrawerMcp {
+    svc: Drawer,
     tool_router: ToolRouter<Self>,
 }
 
-impl MnemoMcp {
-    pub fn new(svc: Mnemo) -> Self {
+impl DrawerMcp {
+    pub fn new(svc: Drawer) -> Self {
         Self { svc, tool_router: Self::tool_router() }
     }
 }
@@ -67,25 +67,25 @@ fn json<T: serde::Serialize>(v: T) -> Result<String, String> {
 }
 
 #[tool_router]
-impl MnemoMcp {
+impl DrawerMcp {
     #[tool(description = "List the files and folders directly inside a folder (use / for the root).")]
-    async fn mnemo_list(&self, Parameters(a): Parameters<PathArg>) -> Result<String, String> {
+    async fn drawer_list(&self, Parameters(a): Parameters<PathArg>) -> Result<String, String> {
         json(self.svc.list(&a.path).await.map_err(|e| e.to_string())?)
     }
 
     #[tool(description = "Create a folder, including any missing parents.")]
-    async fn mnemo_mkdir(&self, Parameters(a): Parameters<PathArg>) -> Result<String, String> {
+    async fn drawer_mkdir(&self, Parameters(a): Parameters<PathArg>) -> Result<String, String> {
         self.svc.mkdir(&a.path).await.map_err(|e| e.to_string())
     }
 
     #[tool(description = "Read a text file. Returns the content; the version is the latest unless given.")]
-    async fn mnemo_read(&self, Parameters(a): Parameters<ReadArg>) -> Result<String, String> {
+    async fn drawer_read(&self, Parameters(a): Parameters<ReadArg>) -> Result<String, String> {
         let (_, data) = self.svc.read(&a.path, a.version).await.map_err(|e| e.to_string())?;
         String::from_utf8(data).map_err(|_| "file is binary; use the REST API to download it".into())
     }
 
     #[tool(description = "Create or overwrite a text file. Every change becomes a new immutable version.")]
-    async fn mnemo_write(&self, Parameters(a): Parameters<WriteArg>) -> Result<String, String> {
+    async fn drawer_write(&self, Parameters(a): Parameters<WriteArg>) -> Result<String, String> {
         let author = a.author.unwrap_or_else(|| "agent".into());
         let out = self
             .svc
@@ -96,35 +96,35 @@ impl MnemoMcp {
     }
 
     #[tool(description = "Delete a file. Its history is kept and writing the path again restores it.")]
-    async fn mnemo_delete(&self, Parameters(a): Parameters<PathArg>) -> Result<String, String> {
+    async fn drawer_delete(&self, Parameters(a): Parameters<PathArg>) -> Result<String, String> {
         self.svc.delete_file(&a.path).await.map_err(|e| e.to_string())?;
         Ok("deleted".into())
     }
 
     #[tool(description = "Show file metadata (size, mime, current version, author).")]
-    async fn mnemo_stat(&self, Parameters(a): Parameters<ReadArg>) -> Result<String, String> {
+    async fn drawer_stat(&self, Parameters(a): Parameters<ReadArg>) -> Result<String, String> {
         json(self.svc.stat(&a.path, a.version).await.map_err(|e| e.to_string())?)
     }
 
     #[tool(description = "List all versions of a file, newest first.")]
-    async fn mnemo_versions(&self, Parameters(a): Parameters<PathArg>) -> Result<String, String> {
+    async fn drawer_versions(&self, Parameters(a): Parameters<PathArg>) -> Result<String, String> {
         json(self.svc.versions(&a.path).await.map_err(|e| e.to_string())?)
     }
 
     #[tool(description = "Roll a file back to an earlier version. Creates a new version with the old content.")]
-    async fn mnemo_rollback(&self, Parameters(a): Parameters<RollbackArg>) -> Result<String, String> {
+    async fn drawer_rollback(&self, Parameters(a): Parameters<RollbackArg>) -> Result<String, String> {
         let author = a.author.unwrap_or_else(|| "agent".into());
         json(self.svc.rollback(&a.path, a.version, &author).await.map_err(|e| e.to_string())?)
     }
 
     #[tool(description = "Search file names and text contents.")]
-    async fn mnemo_search(&self, Parameters(a): Parameters<SearchArg>) -> Result<String, String> {
+    async fn drawer_search(&self, Parameters(a): Parameters<SearchArg>) -> Result<String, String> {
         json(self.svc.search(&a.query, a.limit.unwrap_or(20)).await.map_err(|e| e.to_string())?)
     }
 }
 
 #[tool_handler(router = self.tool_router)]
-impl ServerHandler for MnemoMcp {
+impl ServerHandler for DrawerMcp {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
     }

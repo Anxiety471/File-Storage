@@ -24,11 +24,11 @@ export interface SearchHit {
   snippet: string;
 }
 
-const BASE = "/mnemo/v1";
+const BASE = "/drawer/v1";
 
-// Optional bearer token, kept in localStorage when the server runs with MNEMO_TOKEN.
+// Optional bearer token, kept in localStorage when the server runs with DRAWER_TOKEN.
 function headers(extra: Record<string, string> = {}): Record<string, string> {
-  const token = localStorage.getItem("mnemo_token");
+  const token = localStorage.getItem("drawer_token");
   return token ? { ...extra, Authorization: `Bearer ${token}` } : extra;
 }
 
@@ -65,7 +65,7 @@ export const api = {
     const r = await check(
       await fetch(`${BASE}/files?${q(path)}`, {
         method: "PUT",
-        headers: headers({ "x-mnemo-author": "ui", "x-mnemo-comment": comment }),
+        headers: headers({ "x-drawer-author": "ui", "x-drawer-comment": comment }),
         body: content,
       }),
     );

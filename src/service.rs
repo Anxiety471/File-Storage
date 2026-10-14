@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 const MAX_CONTENT_SCAN: i64 = 1024 * 1024;
 
 #[derive(Clone)]
-pub struct Mnemo {
+pub struct Drawer {
     pool: SqlitePool,
     blobs: BlobStore,
 }
@@ -113,12 +113,12 @@ fn version_from_row(path: &str, r: &sqlx::sqlite::SqliteRow) -> VersionInfo {
     }
 }
 
-impl Mnemo {
-    /// Open (or create) a store rooted at `data_dir`: `mnemo.db` plus `blobs/`.
+impl Drawer {
+    /// Open (or create) a store rooted at `data_dir`: `drawer.db` plus `blobs/`.
     pub async fn open(data_dir: &Path) -> Result<Self> {
         tokio::fs::create_dir_all(data_dir).await?;
         let opts = SqliteConnectOptions::new()
-            .filename(data_dir.join("mnemo.db"))
+            .filename(data_dir.join("drawer.db"))
             .create_if_missing(true)
             .foreign_keys(true)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);

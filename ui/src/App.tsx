@@ -58,7 +58,7 @@ export function App() {
   return (
     <div className="app">
       <header>
-        <h1>Mnemosyne</h1>
+        <h1>Drawer</h1>
         <form
           onSubmit={(e) => {
             e.preventDefault();

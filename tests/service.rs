@@ -1,8 +1,8 @@
-use mnemo::{error::Error, service::Mnemo};
+use drawer::{error::Error, service::Drawer};
 
-async fn store() -> (Mnemo, tempfile::TempDir) {
+async fn store() -> (Drawer, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    (Mnemo::open(dir.path()).await.unwrap(), dir)
+    (Drawer::open(dir.path()).await.unwrap(), dir)
 }
 
 #[tokio::test]
@@ -92,18 +92,18 @@ async fn search_names_and_contents() {
 
 #[tokio::test]
 async fn path_normalization_rejects_traversal() {
-    assert_eq!(mnemo::service::normalize("a//b/./c/").unwrap(), "/a/b/c");
-    assert_eq!(mnemo::service::normalize("").unwrap(), "/");
-    assert!(mnemo::service::normalize("/a/../b").is_err());
+    assert_eq!(drawer::service::normalize("a//b/./c/").unwrap(), "/a/b/c");
+    assert_eq!(drawer::service::normalize("").unwrap(), "/");
+    assert!(drawer::service::normalize("/a/../b").is_err());
 }
 
 #[tokio::test]
 async fn reopen_persists() {
     let dir = tempfile::tempdir().unwrap();
     {
-        let m = Mnemo::open(dir.path()).await.unwrap();
+        let m = Drawer::open(dir.path()).await.unwrap();
         m.write("/p.txt", b"persist", "t", "").await.unwrap();
     }
-    let m = Mnemo::open(dir.path()).await.unwrap();
+    let m = Drawer::open(dir.path()).await.unwrap();
     assert_eq!(m.read("/p.txt", None).await.unwrap().1, b"persist");
 }
