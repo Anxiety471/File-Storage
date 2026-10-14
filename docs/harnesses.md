@@ -43,6 +43,17 @@ mcp_servers:
 
 To keep an agent away from permanent deletes, add `tools: { exclude: [drawer_purge] }`.
 
+### Mirror every file Hermes writes
+
+MCP lets the agent save to Drawer when it chooses to. To make every `write_file` and `patch` land in Drawer whether or not the agent remembers, use the Hermes plugin in [`integrations/hermes/drawer-mirror`](../integrations/hermes/drawer-mirror/README.md). It is a `post_tool_call` hook that PUTs the file over REST after each successful write. Hermes keeps its own artifacts and memory as they are, and both can run side by side.
+
+```yaml
+plugins:
+  enabled: [drawer-mirror]
+```
+
+with `DRAWER_MIRROR_ROOT=~/.hermes/artifacts` in `~/.hermes/.env`.
+
 ## Claude Code
 
 ```sh
