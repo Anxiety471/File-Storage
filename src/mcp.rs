@@ -1,4 +1,6 @@
 //! MCP server. Tool names carry the `drawer_` prefix.
+use std::collections::BTreeMap;
+
 use rmcp::{
     ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -7,7 +9,7 @@ use rmcp::{
 };
 use serde::Deserialize;
 
-use crate::service::Drawer;
+use crate::service::{Drawer, WriteOpts};
 
 #[derive(Clone)]
 pub struct DrawerMcp {
@@ -31,8 +33,8 @@ struct PathArg {
 struct ReadArg {
     /// Absolute path such as /notes/todo.md
     path: String,
-    /// Specific version to read; defaults to the latest.
-    version: Option<i64>,
+    /// Specific generation to read; defaults to the live one.
+    generation: Option<i64>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -41,18 +43,46 @@ struct WriteArg {
     path: String,
     /// Full new text content of the file.
     content: String,
-    /// Why this change was made (stored with the version).
+    /// Why this change was made (stored with the generation).
     comment: Option<String>,
     /// Who is writing, e.g. the agent's name. Defaults to "agent".
     author: Option<String>,
+    /// Custom key/value metadata stored with this generation, e.g. {"source": "web"}.
+    metadata: Option<BTreeMap<String, String>>,
+    /// Optional precondition. 0 = only if the file does not exist; N = only if its live generation is N. Use it when you edited a file you read earlier: on failure the write is refused and nothing changed, so re-read and merge.
+    if_generation_match: Option<i64>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct DeleteArg {
+    /// Absolute path of the file to delete.
+    path: String,
+    /// Optional precondition. 0 = only if the file does not exist; N = only if its live generation is N. Use it when you edited a file you read earlier: on failure the write is refused and nothing changed, so re-read and merge.
+    if_generation_match: Option<i64>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct RollbackArg {
     path: String,
-    /// Version number whose content becomes the new latest version.
-    version: i64,
+    /// Generation whose content becomes the new live generation.
+    generation: i64,
     author: Option<String>,
+    /// Optional precondition. 0 = only if the file does not exist; N = only if its live generation is N. Use it when you edited a file you read earlier: on failure the write is refused and nothing changed, so re-read and merge.
+    if_generation_match: Option<i64>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct CopyArg {
+    /// Absolute path to copy from.
+    from: String,
+    /// Absolute path to copy to. May equal `from`, which adds a new generation with the same content.
+    to: String,
+    /// Generation of `from` to copy; defaults to the live one.
+    source_generation: Option<i64>,
+    author: Option<String>,
+    comment: Option<String>,
+    /// Optional precondition. 0 = only if the file does not exist; N = only if its live generation is N. Use it when you edited a file you read earlier: on failure the write is refused and nothing changed, so re-read and merge.
+    if_generation_match: Option<i64>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -78,43 +108,52 @@ impl DrawerMcp {
         self.svc.mkdir(&a.path).await.map_err(|e| e.to_string())
     }
 
-    #[tool(description = "Read a text file. Returns the content; the version is the latest unless given.")]
+    #[tool(description = "Read a text file. Returns the content; the live generation unless one is given.")]
     async fn drawer_read(&self, Parameters(a): Parameters<ReadArg>) -> Result<String, String> {
-        let (_, data) = self.svc.read(&a.path, a.version).await.map_err(|e| e.to_string())?;
+        let (_, data) = self.svc.read(&a.path, a.generation).await.map_err(|e| e.to_string())?;
         String::from_utf8(data).map_err(|_| "file is binary; use the REST API to download it".into())
     }
 
-    #[tool(description = "Create or overwrite a text file. Every change becomes a new immutable version.")]
+    #[tool(description = "Create or overwrite a text file. Every change becomes a new immutable generation. Returns new_generation=false when nothing changed.")]
     async fn drawer_write(&self, Parameters(a): Parameters<WriteArg>) -> Result<String, String> {
-        let author = a.author.unwrap_or_else(|| "agent".into());
-        let out = self
-            .svc
-            .write(&a.path, a.content.as_bytes(), &author, &a.comment.unwrap_or_default())
-            .await
-            .map_err(|e| e.to_string())?;
+        let opts = WriteOpts {
+            author: a.author.unwrap_or_else(|| "agent".into()),
+            comment: a.comment.unwrap_or_default(),
+            metadata: a.metadata.unwrap_or_default(),
+            if_generation_match: a.if_generation_match,
+        };
+        let out = self.svc.write(&a.path, a.content.as_bytes(), opts).await.map_err(|e| e.to_string())?;
         json(out)
     }
 
     #[tool(description = "Delete a file. Its history is kept and writing the path again restores it.")]
-    async fn drawer_delete(&self, Parameters(a): Parameters<PathArg>) -> Result<String, String> {
-        self.svc.delete_file(&a.path).await.map_err(|e| e.to_string())?;
+    async fn drawer_delete(&self, Parameters(a): Parameters<DeleteArg>) -> Result<String, String> {
+        self.svc.delete_file(&a.path, a.if_generation_match).await.map_err(|e| e.to_string())?;
         Ok("deleted".into())
     }
 
-    #[tool(description = "Show file metadata (size, mime, current version, author).")]
+    #[tool(description = "Show file metadata: size, mime, live generation, author, custom metadata.")]
     async fn drawer_stat(&self, Parameters(a): Parameters<ReadArg>) -> Result<String, String> {
-        json(self.svc.stat(&a.path, a.version).await.map_err(|e| e.to_string())?)
+        json(self.svc.stat(&a.path, a.generation).await.map_err(|e| e.to_string())?)
     }
 
-    #[tool(description = "List all versions of a file, newest first.")]
-    async fn drawer_versions(&self, Parameters(a): Parameters<PathArg>) -> Result<String, String> {
-        json(self.svc.versions(&a.path).await.map_err(|e| e.to_string())?)
+    #[tool(description = "List all generations of a file, newest first.")]
+    async fn drawer_generations(&self, Parameters(a): Parameters<PathArg>) -> Result<String, String> {
+        json(self.svc.generations(&a.path).await.map_err(|e| e.to_string())?)
     }
 
-    #[tool(description = "Roll a file back to an earlier version. Creates a new version with the old content.")]
+    #[tool(description = "Make an earlier generation the live one. Adds a new generation with the old content; history is kept.")]
     async fn drawer_rollback(&self, Parameters(a): Parameters<RollbackArg>) -> Result<String, String> {
-        let author = a.author.unwrap_or_else(|| "agent".into());
-        json(self.svc.rollback(&a.path, a.version, &author).await.map_err(|e| e.to_string())?)
+        let mut opts = WriteOpts::new(a.author.unwrap_or_else(|| "agent".into()), "");
+        opts.if_generation_match = a.if_generation_match;
+        json(self.svc.rollback(&a.path, a.generation, opts).await.map_err(|e| e.to_string())?)
+    }
+
+    #[tool(description = "Copy a file to another path (or to the same path as a new generation). Content is shared, not duplicated. To move a file, copy it then delete the source.")]
+    async fn drawer_copy(&self, Parameters(a): Parameters<CopyArg>) -> Result<String, String> {
+        let mut opts = WriteOpts::new(a.author.unwrap_or_else(|| "agent".into()), a.comment.unwrap_or_default());
+        opts.if_generation_match = a.if_generation_match;
+        json(self.svc.copy(&a.from, &a.to, a.source_generation, opts).await.map_err(|e| e.to_string())?)
     }
 
     #[tool(description = "Search file names and text contents.")]

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, Entry, SearchHit, VersionInfo } from "./api";
+import { api, Entry, Generation, SearchHit } from "./api";
 
 const parentOf = (p: string) => (p.lastIndexOf("/") <= 0 ? "/" : p.slice(0, p.lastIndexOf("/")));
 const join = (dir: string, name: string) => (dir === "/" ? `/${name}` : `${dir}/${name}`);
@@ -10,8 +10,10 @@ export function App() {
   const [file, setFile] = useState<string | null>(null);
   const [content, setContent] = useState("");
   const [saved, setSaved] = useState("");
-  const [versions, setVersions] = useState<VersionInfo[]>([]);
+  const [generations, setGenerations] = useState<Generation[]>([]);
   const [viewing, setViewing] = useState<number | null>(null);
+  // The live generation this editor was opened on; saves are guarded on it.
+  const [loaded, setLoaded] = useState<number | null>(null);
   const [comment, setComment] = useState("");
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
@@ -36,14 +38,15 @@ export function App() {
   );
 
   const openFile = useCallback(
-    (path: string, version?: number) =>
+    (path: string, generation?: number) =>
       run(async () => {
-        const [text, vs] = await Promise.all([api.read(path, version), api.versions(path)]);
+        const [text, gens] = await Promise.all([api.read(path, generation), api.generations(path)]);
         setFile(path);
         setContent(text);
         setSaved(text);
-        setVersions(vs);
-        setViewing(version ?? null);
+        setGenerations(gens);
+        setLoaded(gens[0]?.generation ?? null);
+        setViewing(generation ?? null);
         setComment("");
       }),
     [run],
@@ -104,7 +107,7 @@ export function App() {
                 >
                   {e.kind === "folder" ? "▸ " : ""}
                   {e.name}
-                  {e.kind === "file" && <small>v{e.version}</small>}
+                  {e.kind === "file" && <small>g{e.generation}</small>}
                 </li>
               ))}
               {entries.length === 0 && <li className="muted">Empty folder</li>}
@@ -116,7 +119,7 @@ export function App() {
                 const name = prompt("New file name");
                 if (name) run(async () => {
                   const path = join(dir, name);
-                  await api.write(path, "", "created in UI");
+                  await api.write(path, "", "created in UI", 0);
                   await loadDir(dir);
                   await openFile(path);
                 });
@@ -142,7 +145,7 @@ export function App() {
             <>
               <div className="bar">
                 <b>{file}</b>
-                {viewing && <span className="badge">viewing old v{viewing} (read-only)</span>}
+                {viewing && <span className="badge">viewing old generation {viewing} (read-only)</span>}
                 <span className="spacer" />
                 <button
                   onClick={() => {
@@ -165,30 +168,33 @@ export function App() {
                     disabled={content === saved}
                     onClick={() =>
                       run(async () => {
-                        await api.write(file, content, comment);
+                        await api.write(file, content, comment, loaded ?? undefined);
                         await openFile(file);
                         await loadDir(dir);
                       })
                     }
                   >
-                    Save new version
+                    Save new generation
                   </button>
                 </div>
               )}
               <h3>History</h3>
               <ul className="versions">
-                {versions.map((v) => (
-                  <li key={v.version}>
-                    <b>v{v.version}</b> {v.author} · {new Date(v.created_at).toLocaleString()} · {v.size} B
-                    {v.comment && <em> — {v.comment}</em>}
+                {generations.map((g) => (
+                  <li key={g.generation}>
+                    <b>g{g.generation}</b> {g.author} · {new Date(g.created_at).toLocaleString()} · {g.size} B
+                    {g.comment && <em> — {g.comment}</em>}
+                    {Object.entries(g.metadata).map(([k, v]) => (
+                      <code key={k}> {k}={v}</code>
+                    ))}
                     <span className="spacer" />
-                    <button onClick={() => openFile(file, v.version === versions[0].version ? undefined : v.version)}>View</button>
-                    {v.version !== versions[0].version && (
+                    <button onClick={() => openFile(file, g.generation === generations[0].generation ? undefined : g.generation)}>View</button>
+                    {g.generation !== generations[0].generation && (
                       <button
                         onClick={() =>
-                          confirm(`Roll back to v${v.version}? This adds a new version.`) &&
+                          confirm(`Roll back to generation ${g.generation}? This adds a new generation.`) &&
                           run(async () => {
-                            await api.rollback(file, v.version);
+                            await api.rollback(file, g.generation);
                             await openFile(file);
                           })
                         }

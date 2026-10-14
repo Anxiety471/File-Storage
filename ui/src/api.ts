@@ -3,19 +3,24 @@ export interface Entry {
   path: string;
   kind: "file" | "folder";
   size: number | null;
-  version: number | null;
+  generation: number | null;
   updated_at: string;
 }
 
-export interface VersionInfo {
+export interface Generation {
   path: string;
-  version: number;
+  generation: number;
   hash: string;
   size: number;
   mime: string;
   author: string;
   comment: string;
+  metadata: Record<string, string>;
   created_at: string;
+}
+
+export interface WriteOutcome extends Generation {
+  new_generation: boolean;
 }
 
 export interface SearchHit {
@@ -56,14 +61,16 @@ export const api = {
       }),
     );
   },
-  async read(path: string, version?: number): Promise<string> {
-    const extra = version ? `&version=${version}` : "";
+  async read(path: string, generation?: number): Promise<string> {
+    const extra = generation ? `&generation=${generation}` : "";
     const r = await check(await fetch(`${BASE}/files?${q(path, extra)}`, { headers: headers() }));
     return r.text();
   },
-  async write(path: string, content: string, comment: string): Promise<VersionInfo> {
+  // ifGenerationMatch: 0 = create only; N = only if the live generation is still N.
+  async write(path: string, content: string, comment: string, ifGenerationMatch?: number): Promise<WriteOutcome> {
+    const guard = ifGenerationMatch === undefined ? "" : `&if_generation_match=${ifGenerationMatch}`;
     const r = await check(
-      await fetch(`${BASE}/files?${q(path)}`, {
+      await fetch(`${BASE}/files?${q(path, guard)}`, {
         method: "PUT",
         headers: headers({ "x-drawer-author": "ui", "x-drawer-comment": comment }),
         body: content,
@@ -74,16 +81,16 @@ export const api = {
   async remove(path: string): Promise<void> {
     await check(await fetch(`${BASE}/files?${q(path)}`, { method: "DELETE", headers: headers() }));
   },
-  async versions(path: string): Promise<VersionInfo[]> {
-    const r = await check(await fetch(`${BASE}/versions?${q(path)}`, { headers: headers() }));
-    return (await r.json()).versions;
+  async generations(path: string): Promise<Generation[]> {
+    const r = await check(await fetch(`${BASE}/generations?${q(path)}`, { headers: headers() }));
+    return (await r.json()).generations;
   },
-  async rollback(path: string, version: number): Promise<void> {
+  async rollback(path: string, generation: number): Promise<void> {
     await check(
       await fetch(`${BASE}/rollback`, {
         method: "POST",
         headers: headers({ "content-type": "application/json" }),
-        body: JSON.stringify({ path, version, author: "ui" }),
+        body: JSON.stringify({ path, generation, author: "ui" }),
       }),
     );
   },
