@@ -1,0 +1,144 @@
+# Using Drawer from agent harnesses
+
+Drawer speaks the Model Context Protocol (MCP) in two ways. Every harness below supports at least one of them.
+
+- **Streamable HTTP** at `http://127.0.0.1:8787/mcp`, served by `drawer serve`. This is the best choice when several agents, or agents and people, share the same files, because they all talk to one server. Pass `Authorization: Bearer <token>` when the server runs with `--token` / `DRAWER_TOKEN`.
+- **Stdio** with `drawer --data-dir <dir> stdio`. The harness starts Drawer itself, so nothing else needs to run.
+
+Stdio and HTTP can point at the same data directory at the same time (SQLite in WAL mode handles it), but you only get one shared view if everyone uses the same directory.
+
+Tested clients: the official Python MCP SDK (which Hermes is built on) and the official TypeScript MCP SDK (used by Claude Desktop, Cursor, VS Code and Gemini CLI), both over stdio and over HTTP with a bearer token. The Rust test suite uses rmcp, the SDK that Codex is built on.
+
+## What harnesses get
+
+- 18 tools named `drawer_*`. Hermes shows them as `mcp_<server>_drawer_*`.
+- Server instructions explaining revisions, `if_head_revision` and base64. Most harnesses add these to the model's context.
+- Tool annotations. Reads are marked read-only, so harnesses that auto-approve read-only tools can do so. `drawer_purge` is marked destructive. Writes, moves and trash are reversible, because history and the trash keep everything.
+- Input schemas restricted to the portable JSON Schema subset: no `$schema`, `format`, `additionalProperties` or `["type", "null"]` unions. Gemini and other strict model APIs accept them as-is.
+- Binary files go in and out as base64 with `encoding: "base64"`. `drawer_read` returns PNG, JPEG, GIF and WebP files as MCP image content, so vision models can look at them.
+
+In the examples below, replace `/usr/local/bin/drawer` and `/srv/drawer-data` with your paths. `DRAWER_TOKEN` is only needed if the server runs with a token.
+
+## Hermes Agent
+
+`~/.hermes/config.yaml`:
+
+```yaml
+mcp_servers:
+  # local: Hermes starts Drawer
+  drawer:
+    command: "/usr/local/bin/drawer"
+    args: ["--data-dir", "/srv/drawer-data", "stdio"]
+    supports_parallel_tool_calls: true   # safe: concurrent writes are guarded by if_head_revision
+```
+
+```yaml
+mcp_servers:
+  # shared: talk to a running `drawer serve`
+  drawer:
+    url: "http://127.0.0.1:8787/mcp"
+    headers:
+      Authorization: "Bearer YOUR_TOKEN"
+```
+
+To keep an agent away from permanent deletes, add `tools: { exclude: [drawer_purge] }`.
+
+## Claude Code
+
+```sh
+claude mcp add drawer -- /usr/local/bin/drawer --data-dir /srv/drawer-data stdio
+# or, shared:
+claude mcp add --transport http drawer http://127.0.0.1:8787/mcp --header "Authorization: Bearer YOUR_TOKEN"
+```
+
+## Claude Desktop
+
+`claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "drawer": { "command": "/usr/local/bin/drawer", "args": ["--data-dir", "/srv/drawer-data", "stdio"] }
+  }
+}
+```
+
+## OpenAI Codex CLI
+
+`~/.codex/config.toml`:
+
+```toml
+[mcp_servers.drawer]
+command = "/usr/local/bin/drawer"
+args = ["--data-dir", "/srv/drawer-data", "stdio"]
+
+# or, shared:
+# [mcp_servers.drawer]
+# url = "http://127.0.0.1:8787/mcp"
+# bearer_token_env_var = "DRAWER_TOKEN"
+```
+
+## Gemini CLI
+
+`~/.gemini/settings.json`. Note that Gemini CLI uses `httpUrl` for streamable HTTP, while `url` means the older SSE transport.
+
+```json
+{
+  "mcpServers": {
+    "drawer": { "command": "/usr/local/bin/drawer", "args": ["--data-dir", "/srv/drawer-data", "stdio"] },
+    "drawer-shared": { "httpUrl": "http://127.0.0.1:8787/mcp", "headers": { "Authorization": "Bearer YOUR_TOKEN" } }
+  }
+}
+```
+
+## Cursor
+
+`.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global):
+
+```json
+{
+  "mcpServers": {
+    "drawer": { "url": "http://127.0.0.1:8787/mcp", "headers": { "Authorization": "Bearer YOUR_TOKEN" } }
+  }
+}
+```
+
+## VS Code (Copilot agent mode)
+
+`.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "drawer": { "type": "stdio", "command": "/usr/local/bin/drawer", "args": ["--data-dir", "/srv/drawer-data", "stdio"] }
+  }
+}
+```
+
+## Agent frameworks
+
+OpenAI Agents SDK (Python):
+
+```python
+from agents.mcp import MCPServerStreamableHttp
+drawer = MCPServerStreamableHttp(params={"url": "http://127.0.0.1:8787/mcp", "headers": {"Authorization": "Bearer YOUR_TOKEN"}})
+```
+
+LangChain / LangGraph via `langchain-mcp-adapters`:
+
+```python
+from langchain_mcp_adapters.client import MultiServerMCPClient
+client = MultiServerMCPClient({"drawer": {"transport": "streamable_http", "url": "http://127.0.0.1:8787/mcp",
+                                          "headers": {"Authorization": "Bearer YOUR_TOKEN"}}})
+tools = await client.get_tools()
+```
+
+## Harnesses without MCP
+
+Use the REST API at `/drawer/v1` (see the README). Files are plain HTTP: `PUT /drawer/v1/files?path=/a.md` with the raw bytes as the body, and `GET` to read them back.
+
+## Limits worth knowing
+
+- Actors are self-declared through the `author` argument, so sharing grants are cooperative, not a security boundary. Put Drawer behind `--token` and a private network.
+- MCP tool results carry whole files, and base64 makes binaries a third larger. Move very large files over REST instead of through the model's context.
+- The legacy HTTP+SSE transport is not served; every harness above supports streamable HTTP or stdio.
