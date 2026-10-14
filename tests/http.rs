@@ -246,6 +246,23 @@ async fn mcp_tools_over_http() -> anyhow::Result<()> {
         assert!(names.iter().any(|x| x == n), "missing tool {n}: {names:?}");
     }
 
+    // identity and usage notes reach the harness
+    let info = client.peer_info().expect("initialized");
+    assert_eq!(info.server_info.as_ref().map(|i| i.name.as_str()), Some("drawer"));
+    assert!(info.instructions.as_deref().unwrap_or("").contains("if_head_revision"));
+
+    // schemas stay in the subset Gemini and other strict model APIs accept
+    for t in &tools {
+        let schema = serde_json::to_string(&t.input_schema).unwrap();
+        for banned in ["\"$schema\"", "\"format\"", "\"additionalProperties\"", "\"$ref\"", "\"null\""] {
+            assert!(!schema.contains(banned), "{} schema has {banned}: {schema}", t.name);
+        }
+        let ann = t.annotations.as_ref().expect("annotated");
+        assert!(ann.read_only_hint.is_some(), "{} has no read-only hint", t.name);
+    }
+    let purge = tools.iter().find(|t| t.name == "drawer_purge").unwrap();
+    assert_eq!(purge.annotations.as_ref().unwrap().destructive_hint, Some(true));
+
     let call = |name: &'static str, args: Value| {
         let client = &client;
         async move {
@@ -287,8 +304,15 @@ async fn mcp_tools_over_http() -> anyhow::Result<()> {
     // binary files travel as base64
     let r = call("drawer_write", json!({"path": "/mem/logo.png", "content": "iVBORw0KGgo=", "encoding": "base64"})).await?;
     assert_ne!(r.is_error, Some(true));
-    let r = call("drawer_read", json!({"path": "/mem/logo.png"})).await?;
+    let r = call("drawer_write", json!({"path": "/mem/blob.bin", "content": "AAEC/w==", "encoding": "base64"})).await?;
+    assert_ne!(r.is_error, Some(true));
+    let r = call("drawer_read", json!({"path": "/mem/blob.bin"})).await?;
     assert_eq!(r.is_error, Some(true), "binary as text is refused");
+    // images come back as image content for vision models
+    let r = call("drawer_read", json!({"path": "/mem/logo.png"})).await?;
+    let content = serde_json::to_value(&r.content)?;
+    assert_eq!(content[1]["type"], "image");
+    assert_eq!(content[1]["mimeType"], "image/png");
     let r = call("drawer_read", json!({"path": "/mem/logo.png", "encoding": "base64"})).await?;
     assert!(text(r).contains("iVBORw0KGgo="));
 

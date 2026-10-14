@@ -2,17 +2,18 @@
 //!
 //! Agents address nodes by path. Trash, restore and purge take a node `id`, since a trashed
 //! node no longer has a live path. `author` names the actor for permission checks.
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 
 use rmcp::{
     ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{ServerCapabilities, ServerConfig},
+    model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig, ToolAnnotations},
     schemars, tool, tool_handler, tool_router,
 };
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::service::{Drawer, NodeUpdate, Ref, WriteOpts};
 
@@ -24,7 +25,16 @@ pub struct DrawerMcp {
 
 impl DrawerMcp {
     pub fn new(svc: Drawer) -> Self {
-        Self { svc, tool_router: Self::tool_router() }
+        let mut tool_router = Self::tool_router();
+        for route in tool_router.map.values_mut() {
+            let tool = &mut route.attr;
+            let schema = portable_schema(Value::Object((*tool.input_schema).clone()));
+            if let Value::Object(schema) = schema {
+                tool.input_schema = Arc::new(schema);
+            }
+            tool.annotations = Some(annotations_for(&tool.name));
+        }
+        Self { svc, tool_router }
     }
 }
 
@@ -56,7 +66,7 @@ struct WriteArg {
     comment: Option<String>,
     /// Who is writing, e.g. the agent's name. Defaults to "agent". Also the name checked against sharing grants.
     author: Option<String>,
-    /// Custom key/value properties stored with this revision, e.g. {"source": "web"}.
+    /// Custom key/value properties stored with this revision; values are strings, e.g. {"source": "web"}.
     properties: Option<BTreeMap<String, String>>,
     /// Optional precondition: 0 = only if no live file is here; N = only if the head revision is N. On failure nothing changes, so re-read and merge.
     if_head_revision: Option<i64>,
@@ -141,6 +151,61 @@ struct SearchArg {
     limit: Option<usize>,
 }
 
+/// Tool input schemas in the subset every major harness and model API accepts.
+///
+/// schemars emits `"type": ["string", "null"]` for optional fields, `format` hints and a
+/// `$schema` key. OpenAI accepts them, but Gemini (and harnesses that forward schemas to it)
+/// rejects type arrays and unknown keywords. Optional fields are already optional because they
+/// are absent from `required`, so dropping `null` loses nothing.
+fn portable_schema(v: Value) -> Value {
+    match v {
+        Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (k, v) in map {
+                match k.as_str() {
+                    "$schema" | "format" | "additionalProperties" | "default" => continue,
+                    "type" => {
+                        let ty = match v {
+                            Value::Array(types) => {
+                                let mut types: Vec<Value> = types.into_iter().filter(|t| t != "null").collect();
+                                if types.len() == 1 { types.remove(0) } else { Value::Array(types) }
+                            }
+                            other => other,
+                        };
+                        out.insert(k, ty);
+                    }
+                    _ => {
+                        out.insert(k, portable_schema(v));
+                    }
+                }
+            }
+            Value::Object(out)
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(portable_schema).collect()),
+        other => other,
+    }
+}
+
+/// Hints that let harnesses auto-approve safe calls and confirm risky ones.
+fn annotations_for(name: &str) -> ToolAnnotations {
+    let base = ToolAnnotations::new().open_world(false);
+    match name {
+        "drawer_list" | "drawer_read" | "drawer_stat" | "drawer_revisions" | "drawer_trash" | "drawer_starred"
+        | "drawer_search" => base.read_only(true),
+        // gone for good: history included
+        "drawer_purge" => base.read_only(false).destructive(true).idempotent(false),
+        "drawer_unshare" => base.read_only(false).destructive(true).idempotent(true),
+        // reversible: trash can be restored, writes and moves keep history
+        "drawer_mkdir" | "drawer_delete" | "drawer_restore" | "drawer_star" | "drawer_share" | "drawer_move" => {
+            base.read_only(false).destructive(false).idempotent(true)
+        }
+        _ => base.read_only(false).destructive(false).idempotent(false),
+    }
+}
+
+/// Images small enough to hand to a vision model directly.
+const MAX_INLINE_IMAGE: usize = 5 * 1024 * 1024;
+
 fn json<T: serde::Serialize>(v: T) -> Result<String, String> {
     serde_json::to_string_pretty(&v).map_err(|e| e.to_string())
 }
@@ -169,14 +234,23 @@ impl DrawerMcp {
         json(self.svc.mkdir(&a.path, "agent").await.map_err(|e| e.to_string())?)
     }
 
-    #[tool(description = "Read a file. Returns the head revision unless one is given. Text by default; pass encoding \"base64\" for binary files such as PDF, docx, xlsx or images.")]
-    async fn drawer_read(&self, Parameters(a): Parameters<ReadArg>) -> Result<String, String> {
+    #[tool(description = "Read a file. Returns the head revision unless one is given. Text files come back as text and PNG, JPEG, GIF or WebP images as image content. Pass encoding \"base64\" for other binary files such as PDF, docx or xlsx.")]
+    async fn drawer_read(&self, Parameters(a): Parameters<ReadArg>) -> Result<CallToolResult, String> {
         let (rev, data) = self.svc.read(Ref::Path(&a.path), a.revision).await.map_err(|e| e.to_string())?;
         if base64_wanted(&a.encoding)? {
-            return Ok(BASE64.encode(data));
+            return Ok(CallToolResult::success(vec![ContentBlock::text(BASE64.encode(data))]));
         }
-        String::from_utf8(data)
-            .map_err(|_| format!("{} is binary ({}); read it with encoding \"base64\"", a.path, rev.mime))
+        // Raster images come back as MCP image content, so vision models can look at them.
+        let viewable = matches!(rev.mime.as_str(), "image/png" | "image/jpeg" | "image/gif" | "image/webp");
+        if a.encoding.is_none() && viewable && data.len() <= MAX_INLINE_IMAGE {
+            return Ok(CallToolResult::success(vec![
+                ContentBlock::text(format!("{} (revision {}, {}, {} bytes)", a.path, rev.revision, rev.mime, rev.size)),
+                ContentBlock::image(BASE64.encode(data), rev.mime),
+            ]));
+        }
+        let text = String::from_utf8(data)
+            .map_err(|_| format!("{} is binary ({}); read it with encoding \"base64\"", a.path, rev.mime))?;
+        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 
     #[tool(description = "Create or overwrite a file. Every change becomes a new revision. Pass encoding \"base64\" to store binary files such as PDF, docx, xlsx or images. Returns new_revision=false when nothing changed.")]
@@ -292,9 +366,19 @@ impl DrawerMcp {
     }
 }
 
+/// Sent to the client on connect; most harnesses add it to the model's context.
+const INSTRUCTIONS: &str = "Drawer is versioned file storage shared by agents and people. \
+Paths are absolute (/notes/todo.md); parent folders are created on write. Every write adds a \
+revision, so nothing is lost: use drawer_revisions and drawer_rollback to go back. When other \
+agents may edit the same file, read it, then write with if_head_revision set to the revision you \
+read; on a precondition failure, re-read and merge. Binary files (PDF, Office, images) travel as \
+base64 with encoding \"base64\". Deleting moves to the trash; drawer_purge is the only permanent delete.";
+
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for DrawerMcp {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("drawer", env!("CARGO_PKG_VERSION")))
+            .with_instructions(INSTRUCTIONS)
     }
 }

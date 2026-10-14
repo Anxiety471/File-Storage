@@ -44,7 +44,14 @@ Agents address nodes by path. Trash, restore and purge take the node `id`, which
 
 For concurrent agents, read the file, then write with `if_head_revision` set to the revision you read. On a conflict, re-read and merge.
 
-For Hermes, add an MCP server entry pointing at either the URL above or the stdio command. Check the Hermes docs for the exact config key names for your version.
+Setup for Hermes Agent, Claude Code, Claude Desktop, Codex, Gemini CLI, Cursor, VS Code, the OpenAI Agents SDK and LangChain is in [docs/harnesses.md](docs/harnesses.md). In short, for Hermes (`~/.hermes/config.yaml`):
+
+```yaml
+mcp_servers:
+  drawer:
+    command: "/usr/local/bin/drawer"
+    args: ["--data-dir", "/srv/drawer-data", "stdio"]
+```
 
 ## REST API (`/drawer/v1`)
 

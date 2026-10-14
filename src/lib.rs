@@ -34,7 +34,8 @@ pub fn app(svc: Drawer, token: Option<String>, ui_dir: Option<PathBuf>) -> Route
     );
     let mut app = Router::new()
         .nest("/drawer/v1", api::router().with_state(svc).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)))
-        .nest_service("/mcp", mcp);
+        .nest_service("/mcp", mcp)
+        .layer(middleware::from_fn(session_delete_ok));
     if let Some(token) = token {
         app = app.layer(middleware::from_fn(move |req: Request, next: Next| {
             let token = token.clone();
@@ -46,6 +47,18 @@ pub fn app(svc: Drawer, token: Option<String>, ui_dir: Option<PathBuf>) -> Route
         app = app.fallback_service(ServeDir::new(dir).fallback(ServeFile::new(index)));
     }
     app.layer(CorsLayer::permissive())
+}
+
+/// rmcp answers a client's session-closing `DELETE /mcp` with 202, which the Python MCP SDK
+/// (used by Hermes and many other harnesses) logs as a failed termination. The session is
+/// closed either way, so report it as 200.
+async fn session_delete_ok(req: Request, next: Next) -> Response {
+    let closing = req.method() == axum::http::Method::DELETE && req.uri().path() == "/mcp";
+    let mut resp = next.run(req).await;
+    if closing && resp.status() == StatusCode::ACCEPTED {
+        *resp.status_mut() = StatusCode::OK;
+    }
+    resp
 }
 
 async fn check_token(token: &str, req: Request, next: Next) -> Response {
