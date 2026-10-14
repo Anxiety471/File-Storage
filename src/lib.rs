@@ -1,4 +1,4 @@
-//! Mnemosyne: versioned filesystem storage for agents, over REST and MCP.
+//! Drawer: versioned filesystem storage for agents, over REST and MCP.
 pub mod api;
 pub mod blob;
 pub mod error;
@@ -19,18 +19,18 @@ use rmcp::transport::streamable_http_server::{
 };
 use tower_http::{cors::CorsLayer, services::{ServeDir, ServeFile}};
 
-use service::Mnemo;
+use service::Drawer;
 
-/// Build the full HTTP app: REST at /mnemo/v1, MCP at /mcp, and the UI if `ui_dir` exists.
-pub fn app(svc: Mnemo, token: Option<String>, ui_dir: Option<PathBuf>) -> Router {
+/// Build the full HTTP app: REST at /drawer/v1, MCP at /mcp, and the UI if `ui_dir` exists.
+pub fn app(svc: Drawer, token: Option<String>, ui_dir: Option<PathBuf>) -> Router {
     let mcp_svc = svc.clone();
     let mcp = StreamableHttpService::new(
-        move || Ok(mcp::MnemoMcp::new(mcp_svc.clone())),
+        move || Ok(mcp::DrawerMcp::new(mcp_svc.clone())),
         Arc::new(LocalSessionManager::default()),
         StreamableHttpServerConfig::default(),
     );
     let mut app = Router::new()
-        .nest("/mnemo/v1", api::router().with_state(svc))
+        .nest("/drawer/v1", api::router().with_state(svc))
         .nest_service("/mcp", mcp);
     if let Some(token) = token {
         app = app.layer(middleware::from_fn(move |req: Request, next: Next| {
