@@ -14,6 +14,7 @@ Short form: `drawer` (crate name, MCP tool prefix, `/drawer/v1` API path).
 - **Star.** Star any file or folder and list the starred items.
 - **Copy and move.** Copy shares content by hash, so nothing is re-uploaded. Move or rename keeps the id, history and grants.
 - **Sharing.** Role grants (`reader`, `writer`, `owner`) on a node apply to everything below it. A node with no grants anywhere is open.
+- **Any file type.** Files are stored byte-for-byte (up to 512 MB per upload) with a media type from the extension. The web UI previews PDF, Word (.docx), Excel (.xlsx, .xls, .ods), CSV, Markdown, HTML, images, audio and video, and edits text and source code with syntax highlighting for about 80 languages. Other types (.doc, .pptx, archives) download. Uploading onto an existing name adds a revision.
 - **Search** over live file names and text contents.
 - Content-addressed blobs on disk (sha256), metadata in SQLite.
 - Optional bearer token.
@@ -37,6 +38,8 @@ Streamable HTTP endpoint: `http://127.0.0.1:8787/mcp`. Stdio: `drawer --data-dir
 
 Tools: `drawer_list`, `drawer_mkdir`, `drawer_read`, `drawer_write`, `drawer_stat`, `drawer_revisions`, `drawer_rollback`, `drawer_copy`, `drawer_move`, `drawer_delete` (trash), `drawer_trash`, `drawer_restore`, `drawer_purge`, `drawer_star`, `drawer_starred`, `drawer_share`, `drawer_unshare`, `drawer_search`.
 
+`drawer_read` and `drawer_write` take `encoding: "base64"` for binary files such as PDF, docx, xlsx or images; text is the default.
+
 Agents address nodes by path. Trash, restore and purge take the node `id`, which `drawer_trash` and `drawer_stat` return.
 
 For concurrent agents, read the file, then write with `if_head_revision` set to the revision you read. On a conflict, re-read and merge.
@@ -52,7 +55,7 @@ Nodes are named by `path=` or `id=`. Mutations name their actor with `x-drawer-a
 | GET | `/tree?path=/` | live children of a folder |
 | POST | `/folders` | `{"path"}`, creates parents too |
 | DELETE | `/folders?path=` or `?id=` | trash a folder (`&if_head_revision=N` optional) |
-| GET | `/files?path=` or `?id=` | raw bytes, `&revision=N`; response has `x-drawer-revision` and `x-drawer-prop-*` |
+| GET | `/files?path=` or `?id=` | raw bytes, `&revision=N`, `&download=true` for an attachment; response has `x-drawer-revision` and `x-drawer-prop-*`. Files are served with `nosniff` and, except PDFs, a `sandbox` CSP so stored HTML or SVG never runs scripts. |
 | PUT | `/files?path=` | raw body; `x-drawer-comment`, `x-drawer-prop-<key>`; `&if_head_revision=N` |
 | DELETE | `/files?path=` or `?id=` | trash a file (`&if_head_revision=N` optional) |
 | GET | `/files/meta?path=` or `?id=` | the node: id, head revision, size, mime, starred, trashed, properties |

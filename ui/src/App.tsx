@@ -1,6 +1,29 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, Node, Revision, SearchHit } from "./api";
+import { Badge, extOf, fileType, isTextViewer } from "./filetypes";
 import { Icon } from "./icons";
+import { BinaryCard, CodeEditor, DocxView, HtmlView, ImageView, Loading, MarkdownView, MediaView, PdfView, SheetView } from "./viewers";
+
+const BADGE_ICON = {
+  doc: "file", pdf: "pdf", sheet: "sheet", slides: "slides", image: "image",
+  code: "code", text: "file", media: "play", archive: "archive", other: "file",
+} as const satisfies Record<Badge, string>;
+const badgeIcon = (b: Badge) => BADGE_ICON[b];
+
+function KindIcon({ node }: { node: Pick<Node, "kind" | "name" | "mime"> }) {
+  if (node.kind === "folder")
+    return (
+      <span className="kind folder">
+        <Icon name="folder" filled />
+      </span>
+    );
+  const badge = fileType(node.name, node.mime).badge;
+  return (
+    <span className={`kind badge-${badge}`}>
+      <Icon name={badgeIcon(badge)} />
+    </span>
+  );
+}
 
 type View =
   | { kind: "drive"; path: string }
@@ -131,6 +154,25 @@ export function App() {
     });
   };
 
+  const uploadInput = useRef<HTMLInputElement>(null);
+  const [dropping, setDropping] = useState(false);
+
+  // Uploading onto an existing name adds a revision to that file, so nothing is overwritten for good.
+  const upload = (files: File[]) =>
+    run(async () => {
+      if (files.length === 0) return;
+      const dir = currentDir;
+      notify(files.length === 1 ? `Uploading “${files[0].name}”…` : `Uploading ${files.length} files…`);
+      let done = 0;
+      for (const f of files) {
+        await api.write(join(dir, f.name), f, `uploaded ${f.name}`);
+        done++;
+      }
+      if (view.kind !== "drive") setView({ kind: "drive", path: dir });
+      else await refresh();
+      notify(done === 1 ? `Uploaded “${files[0].name}”` : `Uploaded ${done} files`);
+    });
+
   const newFolder = () => {
     setNewMenu(false);
     setDialog({
@@ -251,6 +293,15 @@ export function App() {
                   <button onClick={newFile}>
                     <Icon name="file" size={18} /> New file
                   </button>
+                  <hr />
+                  <button
+                    onClick={() => {
+                      setNewMenu(false);
+                      uploadInput.current?.click();
+                    }}
+                  >
+                    <Icon name="upload" size={18} /> Upload files
+                  </button>
                 </div>
               </>
             )}
@@ -266,7 +317,40 @@ export function App() {
           </a>
         </nav>
 
-        <main className="content">
+        <input
+          ref={uploadInput}
+          type="file"
+          multiple
+          hidden
+          onChange={(e) => {
+            const files = Array.from(e.target.files ?? []);
+            e.target.value = "";
+            upload(files);
+          }}
+        />
+        <main
+          className={dropping ? "content dropping" : "content"}
+          onDragOver={(e) => {
+            if (file || !e.dataTransfer.types.includes("Files")) return;
+            e.preventDefault();
+            setDropping(true);
+          }}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as globalThis.Node | null)) setDropping(false);
+          }}
+          onDrop={(e) => {
+            if (file) return;
+            e.preventDefault();
+            setDropping(false);
+            upload(Array.from(e.dataTransfer.files));
+          }}
+        >
+          {dropping && (
+            <div className="drop-hint">
+              <Icon name="upload" size={32} />
+              Drop to upload to {currentDir === "/" ? "My Drawer" : currentDir}
+            </div>
+          )}
           {file ? (
             <Editor
               key={file}
@@ -313,7 +397,7 @@ export function App() {
                       ? "Trash is empty."
                       : view.kind === "starred"
                         ? "Nothing starred yet. Star files and folders to find them here."
-                        : "This folder is empty. Use New to add a file or folder."
+                        : "This folder is empty. Drop files here, or use New to upload or create one."
                   }
                 />
               )}
@@ -377,9 +461,7 @@ function FileTable(props: {
           <tr key={n.id} onDoubleClick={() => mode !== "trash" && props.open(n)}>
             <td>
               <button className="name" disabled={mode === "trash"} onClick={() => props.open(n)}>
-                <span className={`kind ${n.kind}`}>
-                  <Icon name={n.kind === "folder" ? "folder" : "file"} filled={n.kind === "folder"} />
-                </span>
+                <KindIcon node={n} />
                 <span className="label">{n.name}</span>
                 {n.starred && mode !== "trash" && (
                   <span className="star-mark" title="Starred">
@@ -431,9 +513,7 @@ function SearchResults({ hits, loading, open }: { hits: SearchHit[]; loading: bo
       {hits.map((h) => (
         <li key={h.id}>
           <button onClick={() => open(h.path)}>
-            <span className="kind file">
-              <Icon name="file" />
-            </span>
+            <KindIcon node={{ kind: "file", name: h.path.split("/").pop() ?? "", mime: null }} />
             <span>
               <span className="label">{h.path.split("/").pop()}</span>
               <span className="muted"> in {parentOf(h.path) === "/" ? "My Drawer" : parentOf(h.path)}</span>
@@ -455,9 +535,11 @@ function Editor(props: {
   onClose: () => void;
   onTrash: (n: Node) => void;
 }) {
-  const { path, run, notify, onDirty } = props;
+  const { path, run, notify, onDirty, setDialog } = props;
+  const name = path.split("/").pop() ?? "";
   const [node, setNode] = useState<Node | null>(null);
   const [revisions, setRevisions] = useState<Revision[]>([]);
+  const [blob, setBlob] = useState<Blob | null>(null);
   const [content, setContent] = useState("");
   const [saved, setSaved] = useState("");
   // The head revision the editor was opened on; saves are guarded on it so a stale save gets a 412.
@@ -466,9 +548,13 @@ function Editor(props: {
   const [comment, setComment] = useState("");
   const [saving, setSaving] = useState(false);
   const [showHistory, setShowHistory] = useState(true);
-  const area = useRef<HTMLTextAreaElement>(null);
+  const [mode, setMode] = useState<"edit" | "preview" | null>(null);
+  const uploadInput = useRef<HTMLInputElement>(null);
 
-  const dirty = viewing === null && content !== saved;
+  const type = fileType(name, node?.mime);
+  const editable = isTextViewer(type.viewer);
+  const hasPreview = type.viewer === "markdown" || type.viewer === "html" || type.viewer === "csv";
+  const dirty = editable && viewing === null && content !== saved;
   useEffect(() => onDirty(dirty), [dirty, onDirty]);
   useEffect(() => () => onDirty(false), [onDirty]);
 
@@ -482,47 +568,63 @@ function Editor(props: {
   const load = useCallback(
     (revision?: Revision) =>
       run(async () => {
-        const [text, meta, revs] = await Promise.all([api.read(path, revision?.revision), api.stat(path), api.revisions(path)]);
+        const [data, meta, revs] = await Promise.all([api.readBlob(path, revision?.revision), api.stat(path), api.revisions(path)]);
+        const t = fileType(name, meta.mime);
+        const text = isTextViewer(t.viewer) ? await data.text() : "";
         setNode(meta);
         setRevisions(revs);
+        setBlob(data);
         setContent(text);
         if (!revision) {
           setSaved(text);
           setBase(meta.head_revision);
         }
         setViewing(revision ?? null);
+        // Documents with a rendered form open on it; empty ones open in the editor.
+        setMode((m) => m ?? (text.trim() ? "preview" : "edit"));
       }),
-    [run, path],
+    [run, path, name],
   );
 
   useEffect(() => {
     load();
   }, [load]);
 
-  const save = useCallback(async () => {
-    if (!dirty || saving) return;
-    setSaving(true);
-    try {
-      const out = await api.write(path, content, comment, base ?? undefined);
-      setComment("");
-      await load();
-      notify(out.new_revision ? `Saved revision ${out.revision}` : "No changes to save");
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 412) {
-        props.setDialog({
-          kind: "confirm",
-          title: "This file changed while you were editing",
-          body: "Someone saved a newer revision. Loading it replaces your unsaved text, so copy anything you want to keep first.",
-          action: "Load latest",
-          submit: async () => {
-            await load();
-          },
-        });
-      } else notify(e instanceof Error ? e.message : String(e), "error");
-    } finally {
-      setSaving(false);
-    }
-  }, [dirty, saving, path, content, comment, base, load, notify, props]);
+  const conflict = useCallback(
+    () =>
+      setDialog({
+        kind: "confirm",
+        title: "This file changed while you were editing",
+        body: "Someone saved a newer revision. Loading it replaces your unsaved work, so copy anything you want to keep first.",
+        action: "Load latest",
+        submit: async () => {
+          await load();
+        },
+      }),
+    [setDialog, load],
+  );
+
+  const commit = useCallback(
+    async (data: string | Blob, note: string) => {
+      setSaving(true);
+      try {
+        const out = await api.write(path, data, note, base ?? undefined);
+        setComment("");
+        await load();
+        notify(out.new_revision ? `Saved revision ${out.revision}` : "No changes to save");
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 412) conflict();
+        else notify(e instanceof Error ? e.message : String(e), "error");
+      } finally {
+        setSaving(false);
+      }
+    },
+    [path, base, load, notify, conflict],
+  );
+
+  const save = useCallback(() => {
+    if (dirty && !saving) commit(content, comment);
+  }, [dirty, saving, commit, content, comment]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -536,7 +638,7 @@ function Editor(props: {
   }, [save]);
 
   const head = revisions[0]?.revision;
-  const name = path.split("/").pop();
+  const where = useMemo(() => (parentOf(path) === "/" ? "My Drawer" : parentOf(path)), [path]);
 
   // Opening another revision replaces the editor text, so unsaved edits are confirmed first.
   const openRevision = (r: Revision) => {
@@ -544,7 +646,7 @@ function Editor(props: {
       await load(r.revision === head ? undefined : r);
     };
     if (!dirty) return void go();
-    props.setDialog({
+    setDialog({
       kind: "confirm",
       title: "Discard unsaved changes?",
       body: `Opening revision ${r.revision} replaces the text you have not saved yet.`,
@@ -553,7 +655,24 @@ function Editor(props: {
       submit: go,
     });
   };
-  const where = useMemo(() => (parentOf(path) === "/" ? "My Drawer" : parentOf(path)), [path]);
+
+  const showPreview = hasPreview && mode === "preview";
+  let body: React.ReactNode;
+  if (!blob || !node) body = <Loading />;
+  else if (editable && !showPreview)
+    body = <CodeEditor value={content} onChange={setContent} lang={type.lang} readOnly={viewing !== null} />;
+  else if (type.viewer === "markdown") body = <MarkdownView source={content} />;
+  else if (type.viewer === "html") body = <HtmlView source={content} />;
+  else if (type.viewer === "csv") body = <SheetView text={content} delimiter={extOf(name) === "tsv" ? "\t" : ","} />;
+  else if (type.viewer === "pdf") body = <PdfView blob={blob} />;
+  else if (type.viewer === "docx") body = <DocxView blob={blob} />;
+  else if (type.viewer === "sheet") body = <SheetView blob={blob} />;
+  else if (type.viewer === "image") body = <ImageView blob={blob} name={name} svg={extOf(name) === "svg"} />;
+  else if (type.viewer === "audio" || type.viewer === "video") body = <MediaView blob={blob} kind={type.viewer} />;
+  else
+    body = (
+      <BinaryCard name={name} label={type.label} size={formatSize(blob.size)} onDownload={() => run(() => api.download(path, viewing?.revision))} />
+    );
 
   return (
     <div className="editor">
@@ -561,17 +680,33 @@ function Editor(props: {
         <button className="icon-btn" aria-label="Back to folder" title="Back" onClick={props.onClose}>
           <Icon name="back" />
         </button>
+        <span className={`kind badge-${type.badge}`}>
+          <Icon name={badgeIcon(type.badge)} />
+        </span>
         <div className="editor-title">
           <span className="label">{name}</span>
           <span className="muted small">
-            {where}
+            {where} · {type.label}
             {node?.head_revision ? ` · revision ${node.head_revision}` : ""}
             {dirty && <span className="unsaved"> · Unsaved changes</span>}
           </span>
         </div>
         <span className="spacer" />
+        {hasPreview && (
+          <div className="segmented" role="tablist" aria-label="View mode">
+            <button role="tab" aria-selected={mode === "preview"} className={mode === "preview" ? "on" : ""} onClick={() => setMode("preview")}>
+              <Icon name="eye" size={16} /> Preview
+            </button>
+            <button role="tab" aria-selected={mode === "edit"} className={mode === "edit" ? "on" : ""} onClick={() => setMode("edit")}>
+              <Icon name="code" size={16} /> Edit
+            </button>
+          </div>
+        )}
         {node && (
           <>
+            <button className="icon-btn" title="Download" aria-label="Download" onClick={() => run(() => api.download(path, viewing?.revision))}>
+              <Icon name="download" />
+            </button>
             <button
               className="icon-btn"
               title={node.starred ? "Unstar" : "Star"}
@@ -610,7 +745,7 @@ function Editor(props: {
               <button
                 className="btn primary"
                 onClick={() =>
-                  props.setDialog({
+                  setDialog({
                     kind: "confirm",
                     title: `Restore revision ${viewing.revision}?`,
                     body: "This adds a new revision with this content. Nothing in the history is lost.",
@@ -627,16 +762,8 @@ function Editor(props: {
               </button>
             </div>
           )}
-          <textarea
-            ref={area}
-            className="doc"
-            value={content}
-            readOnly={viewing !== null}
-            spellCheck={false}
-            onChange={(e) => setContent(e.target.value)}
-            placeholder="Start typing…"
-          />
-          {viewing === null && (
+          <div className="viewer">{body}</div>
+          {viewing === null && editable && !showPreview && (
             <div className="save-bar">
               <input
                 placeholder="Describe your change (optional)"
@@ -646,6 +773,28 @@ function Editor(props: {
               />
               <button className="btn primary" disabled={!dirty || saving} onClick={save}>
                 {saving ? "Saving…" : "Save revision"}
+              </button>
+            </div>
+          )}
+          {viewing === null && !editable && node && (
+            <div className="save-bar">
+              <input
+                placeholder="Describe the new version (optional)"
+                value={comment}
+                onChange={(e) => setComment(e.target.value)}
+              />
+              <input
+                ref={uploadInput}
+                type="file"
+                hidden
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  e.target.value = "";
+                  if (f) commit(f, comment || `uploaded ${f.name}`);
+                }}
+              />
+              <button className="btn primary" disabled={saving} onClick={() => uploadInput.current?.click()}>
+                <Icon name="upload" size={18} /> {saving ? "Uploading…" : "Upload new version"}
               </button>
             </div>
           )}

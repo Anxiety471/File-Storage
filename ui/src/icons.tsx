@@ -16,6 +16,15 @@ const paths: Record<string, string> = {
   more: "M12 6h.01M12 12h.01M12 18h.01",
   eye: "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z",
   check: "M5 12l5 5L20 7",
+  download: "M12 4v11M7 10l5 5 5-5M5 20h14",
+  upload: "M12 20V9M7 14l5-5 5 5M5 4h14",
+  code: "M9 8l-5 4 5 4M15 8l5 4-5 4M13 5l-2 14",
+  sheet: "M4 5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1zM4 10h16M4 15h16M10 4v16",
+  image: "M4 5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1zM4 16l5-5 4 4 3-3 4 4M15 8.5h.01",
+  play: "M4 5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1zM10 9v6l5-3z",
+  archive: "M4 5h16v4H4zM5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4",
+  pdf: "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5M8.5 16v-4h1.5a1 1 0 0 1 0 2H8.5M13 12v4h1a2 2 0 0 0 0-4z",
+  slides: "M4 5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1zM8 9h8v6H8z",
 };
 
 export function Icon({ name, size = 20, filled = false }: { name: keyof typeof paths; size?: number; filled?: boolean }) {

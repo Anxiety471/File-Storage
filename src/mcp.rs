@@ -4,6 +4,8 @@
 //! node no longer has a live path. `author` names the actor for permission checks.
 use std::collections::BTreeMap;
 
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+
 use rmcp::{
     ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -38,14 +40,18 @@ struct ReadArg {
     path: String,
     /// Specific revision to read; defaults to the head revision.
     revision: Option<i64>,
+    /// "text" (default) or "base64". Binary files such as PDFs, Word or Excel documents and images must be read as base64.
+    encoding: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct WriteArg {
     /// Absolute path; parent folders are created automatically.
     path: String,
-    /// Full new text content of the file.
+    /// Full new content of the file: plain text, or base64 when encoding is "base64".
     content: String,
+    /// "text" (default) or "base64". Use base64 to store binary files such as PDF, docx, xlsx or images.
+    encoding: Option<String>,
     /// Why this change was made (stored with the revision).
     comment: Option<String>,
     /// Who is writing, e.g. the agent's name. Defaults to "agent". Also the name checked against sharing grants.
@@ -139,6 +145,14 @@ fn json<T: serde::Serialize>(v: T) -> Result<String, String> {
     serde_json::to_string_pretty(&v).map_err(|e| e.to_string())
 }
 
+fn base64_wanted(encoding: &Option<String>) -> Result<bool, String> {
+    match encoding.as_deref() {
+        None | Some("text") | Some("utf8") | Some("utf-8") => Ok(false),
+        Some("base64") => Ok(true),
+        Some(other) => Err(format!("unknown encoding {other:?}; use \"text\" or \"base64\"")),
+    }
+}
+
 fn actor(author: Option<String>) -> String {
     author.unwrap_or_else(|| "agent".into())
 }
@@ -155,13 +169,17 @@ impl DrawerMcp {
         json(self.svc.mkdir(&a.path, "agent").await.map_err(|e| e.to_string())?)
     }
 
-    #[tool(description = "Read a text file. Returns the content of the head revision unless one is given.")]
+    #[tool(description = "Read a file. Returns the head revision unless one is given. Text by default; pass encoding \"base64\" for binary files such as PDF, docx, xlsx or images.")]
     async fn drawer_read(&self, Parameters(a): Parameters<ReadArg>) -> Result<String, String> {
-        let (_, data) = self.svc.read(Ref::Path(&a.path), a.revision).await.map_err(|e| e.to_string())?;
-        String::from_utf8(data).map_err(|_| "file is binary; use the REST API to download it".into())
+        let (rev, data) = self.svc.read(Ref::Path(&a.path), a.revision).await.map_err(|e| e.to_string())?;
+        if base64_wanted(&a.encoding)? {
+            return Ok(BASE64.encode(data));
+        }
+        String::from_utf8(data)
+            .map_err(|_| format!("{} is binary ({}); read it with encoding \"base64\"", a.path, rev.mime))
     }
 
-    #[tool(description = "Create or overwrite a text file. Every change becomes a new revision. Returns new_revision=false when nothing changed.")]
+    #[tool(description = "Create or overwrite a file. Every change becomes a new revision. Pass encoding \"base64\" to store binary files such as PDF, docx, xlsx or images. Returns new_revision=false when nothing changed.")]
     async fn drawer_write(&self, Parameters(a): Parameters<WriteArg>) -> Result<String, String> {
         let opts = WriteOpts {
             author: actor(a.author),
@@ -169,7 +187,12 @@ impl DrawerMcp {
             properties: a.properties.unwrap_or_default(),
             if_head_revision: a.if_head_revision,
         };
-        let out = self.svc.write(&a.path, a.content.as_bytes(), opts).await.map_err(|e| e.to_string())?;
+        let data = if base64_wanted(&a.encoding)? {
+            BASE64.decode(a.content.trim()).map_err(|e| format!("content is not valid base64: {e}"))?
+        } else {
+            a.content.into_bytes()
+        };
+        let out = self.svc.write(&a.path, &data, opts).await.map_err(|e| e.to_string())?;
         json(out)
     }
 

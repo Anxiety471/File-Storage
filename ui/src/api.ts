@@ -87,13 +87,33 @@ export const api = {
     const r = await check(await fetch(`${BASE}/files?${q(path, extra)}`, { headers: headers() }));
     return r.text();
   },
+  // Raw bytes of a revision (the head by default), for viewers and downloads.
+  async readBlob(path: string, revision?: number, download = false): Promise<Blob> {
+    const extra = (revision ? `&revision=${revision}` : "") + (download ? "&download=true" : "");
+    const r = await check(await fetch(`${BASE}/files?${q(path, extra)}`, { headers: headers() }));
+    return r.blob();
+  },
+  // Saves the file through the browser's download prompt.
+  async download(path: string, revision?: number): Promise<void> {
+    const blob = await api.readBlob(path, revision, true);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const name = path.split("/").pop() ?? "download";
+    const dot = name.lastIndexOf(".");
+    a.download = revision ? `${dot > 0 ? name.slice(0, dot) : name} (revision ${revision})${dot > 0 ? name.slice(dot) : ""}` : name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  },
+  // content is text or a File/Blob for uploads.
   // ifHeadRevision: 0 = create only; N = only if the head is still N. A stale save gets a 412.
-  async write(path: string, content: string, comment: string, ifHeadRevision?: number): Promise<WriteOutcome> {
+  async write(path: string, content: string | Blob, comment: string, ifHeadRevision?: number): Promise<WriteOutcome> {
     const guard = ifHeadRevision === undefined ? "" : `&if_head_revision=${ifHeadRevision}`;
     const r = await check(
       await fetch(`${BASE}/files?${q(path, guard)}`, {
         method: "PUT",
-        headers: headers({ "x-drawer-author": "ui", "x-drawer-comment": comment }),
+        // header values must be ASCII; non-ASCII comments are percent-encoded
+        headers: headers({ "x-drawer-author": "ui", "x-drawer-comment": /^[\x20-\x7e]*$/.test(comment) ? comment : encodeURIComponent(comment) }),
         body: content,
       }),
     );

@@ -9,7 +9,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use axum::{
     Router,
-    extract::Request,
+    extract::{DefaultBodyLimit, Request},
     http::{StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -21,6 +21,9 @@ use tower_http::{cors::CorsLayer, services::{ServeDir, ServeFile}};
 
 use service::Drawer;
 
+/// Largest request body accepted, so uploads of PDFs, Office files and media fit.
+pub const MAX_UPLOAD_BYTES: usize = 512 * 1024 * 1024;
+
 /// Build the full HTTP app: REST at /drawer/v1, MCP at /mcp, and the UI if `ui_dir` exists.
 pub fn app(svc: Drawer, token: Option<String>, ui_dir: Option<PathBuf>) -> Router {
     let mcp_svc = svc.clone();
@@ -30,7 +33,7 @@ pub fn app(svc: Drawer, token: Option<String>, ui_dir: Option<PathBuf>) -> Route
         StreamableHttpServerConfig::default(),
     );
     let mut app = Router::new()
-        .nest("/drawer/v1", api::router().with_state(svc))
+        .nest("/drawer/v1", api::router().with_state(svc).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)))
         .nest_service("/mcp", mcp);
     if let Some(token) = token {
         app = app.layer(middleware::from_fn(move |req: Request, next: Next| {

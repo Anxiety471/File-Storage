@@ -135,6 +135,51 @@ async fn preconditions_properties_copy_move_and_trash_over_rest() {
 }
 
 #[tokio::test]
+async fn binary_files_round_trip_with_types_and_safe_headers() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = drawer::app(Drawer::open(dir.path()).await.unwrap(), None, None);
+
+    // larger than axum's 2 MiB default limit, and not UTF-8
+    let big: Vec<u8> = (0..3 * 1024 * 1024).map(|i| (i % 251) as u8 | 0x80).collect();
+    let cases = [
+        ("/docs/report.pdf", "application/pdf"),
+        ("/docs/plan.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        ("/docs/budget.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        ("/docs/old.xls", "application/vnd.ms-excel"),
+        ("/docs/blob.bin", "application/octet-stream"),
+    ];
+    for (path, mime) in cases {
+        let put = Request::put(format!("/drawer/v1/files?path={path}")).body(Body::from(big.clone())).unwrap();
+        assert_eq!(send(&app, put).await.status(), StatusCode::OK, "{path}");
+        let r = send(&app, get(&format!("/drawer/v1/files?path={path}"))).await;
+        assert_eq!(r.headers()["content-type"], mime, "{path}");
+        assert_eq!(r.headers()["x-content-type-options"], "nosniff");
+        assert_eq!(r.into_body().collect().await.unwrap().to_bytes().len(), big.len());
+    }
+
+    // source code and Markdown are text; HTML opened directly runs sandboxed
+    for (path, body, mime) in [
+        ("/src/main.rs", "fn main() {}", "text/plain"),
+        ("/src/app.ts", "export {}", "text/plain"),
+        ("/notes/a.md", "# hi", "text/markdown"),
+        ("/web/x.html", "<script>alert(1)</script>", "text/html"),
+    ] {
+        let put = Request::put(format!("/drawer/v1/files?path={path}")).body(Body::from(body)).unwrap();
+        send(&app, put).await;
+        let r = send(&app, get(&format!("/drawer/v1/files?path={path}"))).await;
+        assert_eq!(r.headers()["content-type"], mime, "{path}");
+        assert!(r.headers()["content-security-policy"].to_str().unwrap().starts_with("sandbox"));
+    }
+
+    // inline by default, attachment on request, with the file name
+    let r = send(&app, get("/drawer/v1/files?path=/docs/report.pdf")).await;
+    assert_eq!(r.headers()["content-disposition"], "inline; filename*=UTF-8''report.pdf");
+    assert!(r.headers().get("content-security-policy").is_none());
+    let r = send(&app, get("/drawer/v1/files?path=/docs/plan.docx&download=true")).await;
+    assert_eq!(r.headers()["content-disposition"], "attachment; filename*=UTF-8''plan.docx");
+}
+
+#[tokio::test]
 async fn permissions_are_enforced_over_rest() {
     let dir = tempfile::tempdir().unwrap();
     let app = drawer::app(Drawer::open(dir.path()).await.unwrap(), None, None);
@@ -238,6 +283,14 @@ async fn mcp_tools_over_http() -> anyhow::Result<()> {
     assert_ne!(r.is_error, Some(true));
     let r = call("drawer_read", json!({"path": "/mem/archive/a.md"})).await?;
     assert!(text(r).contains("alpha"));
+
+    // binary files travel as base64
+    let r = call("drawer_write", json!({"path": "/mem/logo.png", "content": "iVBORw0KGgo=", "encoding": "base64"})).await?;
+    assert_ne!(r.is_error, Some(true));
+    let r = call("drawer_read", json!({"path": "/mem/logo.png"})).await?;
+    assert_eq!(r.is_error, Some(true), "binary as text is refused");
+    let r = call("drawer_read", json!({"path": "/mem/logo.png", "encoding": "base64"})).await?;
+    assert!(text(r).contains("iVBORw0KGgo="));
 
     let r = call("drawer_read", json!({"path": "/missing"})).await?;
     assert_eq!(r.is_error, Some(true));

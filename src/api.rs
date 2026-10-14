@@ -25,6 +25,8 @@ struct PathQ {
     id: Option<String>,
     revision: Option<i64>,
     if_head_revision: Option<i64>,
+    /// `true` serves the file as an attachment instead of inline.
+    download: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -112,6 +114,16 @@ fn target(q: &PathQ) -> Result<Ref<'_>> {
     pick(&q.id, &q.path)
 }
 
+/// RFC 5987 percent-encoding for `filename*=`.
+fn encode_filename(name: &str) -> String {
+    name.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-' | b'_' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 fn header_str(h: &HeaderMap, name: &str, default: &str) -> String {
     h.get(name).and_then(|v| v.to_str().ok()).unwrap_or(default).to_string()
 }
@@ -152,11 +164,21 @@ async fn mkdir(State(s): State<Drawer>, headers: HeaderMap, Json(b): Json<PathBo
 }
 
 async fn read_file(State(s): State<Drawer>, Query(q): Query<PathQ>) -> Result<Response> {
+    let name = s.stat(target(&q)?).await?.name;
     let (rev, data) = s.read(target(&q)?, q.revision).await?;
     let mut resp = data.into_response();
     let h = resp.headers_mut();
     if let Ok(v) = HeaderValue::from_str(&rev.mime) {
         h.insert(header::CONTENT_TYPE, v);
+    }
+    let disposition = if q.download.unwrap_or(false) { "attachment" } else { "inline" };
+    let value = format!("{disposition}; filename*=UTF-8''{}", encode_filename(&name));
+    h.insert(header::CONTENT_DISPOSITION, HeaderValue::from_str(&value).expect("percent-encoded is ascii"));
+    // Stored files are untrusted: never sniff them, and run HTML or SVG opened directly in a
+    // sandbox with no scripts and an opaque origin. PDFs are exempt so the browser viewer works.
+    h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    if rev.mime != "application/pdf" {
+        h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'"));
     }
     h.insert("x-drawer-revision", HeaderValue::from(rev.revision));
     h.insert("x-drawer-hash", HeaderValue::from_str(&rev.hash).expect("hex is ascii"));

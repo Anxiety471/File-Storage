@@ -189,20 +189,68 @@ fn name_of(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or("")
 }
 
+/// Text-like media types whose content search can scan.
+fn is_text(mime: &str) -> bool {
+    mime.starts_with("text/") || matches!(mime, "application/json" | "application/xml" | "application/yaml" | "application/toml")
+}
+
+/// Media type from the file extension, falling back to a UTF-8 check for unknown extensions.
 fn guess_mime(path: &str, data: &[u8]) -> String {
-    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    match ext.as_str() {
-        "md" => "text/markdown",
-        "json" => "application/json",
-        "html" => "text/html",
+    let name = name_of(path).to_ascii_lowercase();
+    let ext = match name.rsplit_once('.') {
+        Some((_, ext)) => ext,
+        None => name.as_str(), // Dockerfile, Makefile, ...
+    };
+    let mime = match ext {
+        // documents
+        "pdf" => "application/pdf",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "odt" => "application/vnd.oasis.opendocument.text",
+        "ods" => "application/vnd.oasis.opendocument.spreadsheet",
+        "odp" => "application/vnd.oasis.opendocument.presentation",
+        "rtf" => "application/rtf",
+        "epub" => "application/epub+zip",
+        // text and data
+        "md" | "markdown" => "text/markdown",
+        "txt" | "log" => "text/plain",
         "csv" => "text/csv",
+        "tsv" => "text/tab-separated-values",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "yaml" | "yml" => "application/yaml",
+        "toml" => "application/toml",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        // images, audio, video
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
-        "pdf" => "application/pdf",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
+        "bmp" => "image/bmp",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
+        "m4a" => "audio/mp4",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        // archives
+        "zip" => "application/zip",
+        "gz" => "application/gzip",
+        "tar" => "application/x-tar",
+        "7z" => "application/x-7z-compressed",
         _ if std::str::from_utf8(data).is_ok() => "text/plain",
         _ => "application/octet-stream",
-    }
-    .into()
+    };
+    // Source files (.rs, .py, .ts, ...) fall through to text/plain; the UI picks a highlighter from the extension.
+    mime.into()
 }
 
 fn now() -> String {
@@ -689,7 +737,7 @@ impl Drawer {
             let (Some(size), Some(mime), Some(hash)) = (f.size, f.mime.as_deref(), f.hash.as_deref()) else {
                 continue;
             };
-            if size > MAX_CONTENT_SCAN || mime.starts_with("image/") || mime == "application/pdf" {
+            if size > MAX_CONTENT_SCAN || !is_text(mime) {
                 continue;
             }
             let data = self.blobs.get(hash).await?;
