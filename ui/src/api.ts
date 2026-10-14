@@ -49,10 +49,16 @@ function headers(extra: Record<string, string> = {}): Record<string, string> {
   return token ? { ...extra, Authorization: `Bearer ${token}` } : extra;
 }
 
+export class ApiError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
 async function check(r: Response): Promise<Response> {
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
-    throw new Error(body.error ?? `${r.status} ${r.statusText}`);
+    throw new ApiError(r.status, body.error ?? `${r.status} ${r.statusText}`);
   }
   return r;
 }
@@ -104,7 +110,7 @@ export const api = {
   async rollback(path: string, revision: number): Promise<void> {
     await check(await fetch(`${BASE}/rollback`, json("POST", { path, revision, author: "ui" })));
   },
-  async update(id: string, patch: { name?: string; starred?: boolean; trashed?: boolean }): Promise<Node> {
+  async update(id: string, patch: { name?: string; parent_id?: string; starred?: boolean; trashed?: boolean }): Promise<Node> {
     const r = await check(
       await fetch(`${BASE}/nodes/${encodeURIComponent(id)}`, {
         ...json("PATCH", patch),
@@ -121,6 +127,10 @@ export const api = {
         headers: headers({ "x-drawer-author": "ui" }),
       }),
     );
+  },
+  async starred(): Promise<Node[]> {
+    const r = await check(await fetch(`${BASE}/starred`, { headers: headers() }));
+    return (await r.json()).nodes;
   },
   async trashed(): Promise<Node[]> {
     const r = await check(await fetch(`${BASE}/trash`, { headers: headers() }));
