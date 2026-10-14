@@ -11,6 +11,8 @@ pub enum Error {
     Conflict(String),
     #[error("precondition failed: {0}")]
     PreconditionFailed(String),
+    #[error("forbidden: {0}")]
+    Forbidden(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -36,6 +38,7 @@ impl IntoResponse for Error {
             Error::Invalid(_) => StatusCode::BAD_REQUEST,
             Error::Conflict(_) => StatusCode::CONFLICT,
             Error::PreconditionFailed(_) => StatusCode::PRECONDITION_FAILED,
+            Error::Forbidden(_) => StatusCode::FORBIDDEN,
             Error::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(json!({ "error": self.to_string() }))).into_response()

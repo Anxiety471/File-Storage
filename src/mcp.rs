@@ -1,4 +1,7 @@
 //! MCP server. Tool names carry the `drawer_` prefix.
+//!
+//! Agents address nodes by path. Trash, restore and purge take a node `id`, since a trashed
+//! node no longer has a live path. `author` names the actor for permission checks.
 use std::collections::BTreeMap;
 
 use rmcp::{
@@ -9,7 +12,7 @@ use rmcp::{
 };
 use serde::Deserialize;
 
-use crate::service::{Drawer, WriteOpts};
+use crate::service::{Drawer, NodeUpdate, Ref, WriteOpts};
 
 #[derive(Clone)]
 pub struct DrawerMcp {
@@ -33,8 +36,8 @@ struct PathArg {
 struct ReadArg {
     /// Absolute path such as /notes/todo.md
     path: String,
-    /// Specific generation to read; defaults to the live one.
-    generation: Option<i64>,
+    /// Specific revision to read; defaults to the head revision.
+    revision: Option<i64>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -43,46 +46,86 @@ struct WriteArg {
     path: String,
     /// Full new text content of the file.
     content: String,
-    /// Why this change was made (stored with the generation).
+    /// Why this change was made (stored with the revision).
     comment: Option<String>,
-    /// Who is writing, e.g. the agent's name. Defaults to "agent".
+    /// Who is writing, e.g. the agent's name. Defaults to "agent". Also the name checked against sharing grants.
     author: Option<String>,
-    /// Custom key/value metadata stored with this generation, e.g. {"source": "web"}.
-    metadata: Option<BTreeMap<String, String>>,
-    /// Optional precondition. 0 = only if the file does not exist; N = only if its live generation is N. Use it when you edited a file you read earlier: on failure the write is refused and nothing changed, so re-read and merge.
-    if_generation_match: Option<i64>,
+    /// Custom key/value properties stored with this revision, e.g. {"source": "web"}.
+    properties: Option<BTreeMap<String, String>>,
+    /// Optional precondition: 0 = only if no live file is here; N = only if the head revision is N. On failure nothing changes, so re-read and merge.
+    if_head_revision: Option<i64>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct DeleteArg {
-    /// Absolute path of the file to delete.
+    /// Absolute path of the file or folder to move to the trash.
     path: String,
-    /// Optional precondition. 0 = only if the file does not exist; N = only if its live generation is N. Use it when you edited a file you read earlier: on failure the write is refused and nothing changed, so re-read and merge.
-    if_generation_match: Option<i64>,
+    /// Optional precondition on the head revision, as for drawer_write.
+    if_head_revision: Option<i64>,
+    author: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct RollbackArg {
     path: String,
-    /// Generation whose content becomes the new live generation.
-    generation: i64,
+    /// Revision whose content becomes the new head revision.
+    revision: i64,
     author: Option<String>,
-    /// Optional precondition. 0 = only if the file does not exist; N = only if its live generation is N. Use it when you edited a file you read earlier: on failure the write is refused and nothing changed, so re-read and merge.
-    if_generation_match: Option<i64>,
+    if_head_revision: Option<i64>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct CopyArg {
     /// Absolute path to copy from.
     from: String,
-    /// Absolute path to copy to. May equal `from`, which adds a new generation with the same content.
+    /// Absolute path to copy to. May equal `from`, which adds a revision with the same content.
     to: String,
-    /// Generation of `from` to copy; defaults to the live one.
-    source_generation: Option<i64>,
+    /// Revision of `from` to copy; defaults to the head revision.
+    source_revision: Option<i64>,
     author: Option<String>,
     comment: Option<String>,
-    /// Optional precondition. 0 = only if the file does not exist; N = only if its live generation is N. Use it when you edited a file you read earlier: on failure the write is refused and nothing changed, so re-read and merge.
-    if_generation_match: Option<i64>,
+    if_head_revision: Option<i64>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct MoveArg {
+    /// Current absolute path.
+    from: String,
+    /// New absolute path. Renames if only the last segment differs; moves otherwise.
+    to: String,
+    author: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct StarArg {
+    path: String,
+    /// true to star, false to unstar.
+    starred: bool,
+    author: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct IdArg {
+    /// Node id, as shown by drawer_trash or drawer_stat.
+    id: String,
+    author: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct ShareArg {
+    path: String,
+    /// Who gets access: an agent name, or "anyone".
+    principal: String,
+    /// reader, writer or owner.
+    role: String,
+    author: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct UnshareArg {
+    path: String,
+    principal: String,
+    author: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -96,67 +139,131 @@ fn json<T: serde::Serialize>(v: T) -> Result<String, String> {
     serde_json::to_string_pretty(&v).map_err(|e| e.to_string())
 }
 
+fn actor(author: Option<String>) -> String {
+    author.unwrap_or_else(|| "agent".into())
+}
+
 #[tool_router]
 impl DrawerMcp {
-    #[tool(description = "List the files and folders directly inside a folder (use / for the root).")]
+    #[tool(description = "List the live files and folders directly inside a folder (use / for the root).")]
     async fn drawer_list(&self, Parameters(a): Parameters<PathArg>) -> Result<String, String> {
         json(self.svc.list(&a.path).await.map_err(|e| e.to_string())?)
     }
 
-    #[tool(description = "Create a folder, including any missing parents.")]
+    #[tool(description = "Create a folder, including any missing parents. Returns the folder's node id.")]
     async fn drawer_mkdir(&self, Parameters(a): Parameters<PathArg>) -> Result<String, String> {
-        self.svc.mkdir(&a.path).await.map_err(|e| e.to_string())
+        json(self.svc.mkdir(&a.path, "agent").await.map_err(|e| e.to_string())?)
     }
 
-    #[tool(description = "Read a text file. Returns the content; the live generation unless one is given.")]
+    #[tool(description = "Read a text file. Returns the content of the head revision unless one is given.")]
     async fn drawer_read(&self, Parameters(a): Parameters<ReadArg>) -> Result<String, String> {
-        let (_, data) = self.svc.read(&a.path, a.generation).await.map_err(|e| e.to_string())?;
+        let (_, data) = self.svc.read(Ref::Path(&a.path), a.revision).await.map_err(|e| e.to_string())?;
         String::from_utf8(data).map_err(|_| "file is binary; use the REST API to download it".into())
     }
 
-    #[tool(description = "Create or overwrite a text file. Every change becomes a new immutable generation. Returns new_generation=false when nothing changed.")]
+    #[tool(description = "Create or overwrite a text file. Every change becomes a new revision. Returns new_revision=false when nothing changed.")]
     async fn drawer_write(&self, Parameters(a): Parameters<WriteArg>) -> Result<String, String> {
         let opts = WriteOpts {
-            author: a.author.unwrap_or_else(|| "agent".into()),
+            author: actor(a.author),
             comment: a.comment.unwrap_or_default(),
-            metadata: a.metadata.unwrap_or_default(),
-            if_generation_match: a.if_generation_match,
+            properties: a.properties.unwrap_or_default(),
+            if_head_revision: a.if_head_revision,
         };
         let out = self.svc.write(&a.path, a.content.as_bytes(), opts).await.map_err(|e| e.to_string())?;
         json(out)
     }
 
-    #[tool(description = "Delete a file. Its history is kept and writing the path again restores it.")]
+    #[tool(description = "Move a file or folder to the trash. Restore it with drawer_restore, or delete it forever with drawer_purge.")]
     async fn drawer_delete(&self, Parameters(a): Parameters<DeleteArg>) -> Result<String, String> {
-        self.svc.delete_file(&a.path, a.if_generation_match).await.map_err(|e| e.to_string())?;
-        Ok("deleted".into())
+        json(
+            self.svc
+                .trash(Ref::Path(&a.path), a.if_head_revision, &actor(a.author))
+                .await
+                .map_err(|e| e.to_string())?,
+        )
     }
 
-    #[tool(description = "Show file metadata: size, mime, live generation, author, custom metadata.")]
-    async fn drawer_stat(&self, Parameters(a): Parameters<ReadArg>) -> Result<String, String> {
-        json(self.svc.stat(&a.path, a.generation).await.map_err(|e| e.to_string())?)
+    #[tool(description = "Show a node's metadata: id, kind, head revision, size, mime, starred, trashed, properties.")]
+    async fn drawer_stat(&self, Parameters(a): Parameters<PathArg>) -> Result<String, String> {
+        json(self.svc.stat(Ref::Path(&a.path)).await.map_err(|e| e.to_string())?)
     }
 
-    #[tool(description = "List all generations of a file, newest first.")]
-    async fn drawer_generations(&self, Parameters(a): Parameters<PathArg>) -> Result<String, String> {
-        json(self.svc.generations(&a.path).await.map_err(|e| e.to_string())?)
+    #[tool(description = "List all revisions of a file, newest first.")]
+    async fn drawer_revisions(&self, Parameters(a): Parameters<PathArg>) -> Result<String, String> {
+        json(self.svc.revisions(Ref::Path(&a.path)).await.map_err(|e| e.to_string())?)
     }
 
-    #[tool(description = "Make an earlier generation the live one. Adds a new generation with the old content; history is kept.")]
+    #[tool(description = "Make an earlier revision the head revision. Adds a new revision with the old content; history is kept.")]
     async fn drawer_rollback(&self, Parameters(a): Parameters<RollbackArg>) -> Result<String, String> {
-        let mut opts = WriteOpts::new(a.author.unwrap_or_else(|| "agent".into()), "");
-        opts.if_generation_match = a.if_generation_match;
-        json(self.svc.rollback(&a.path, a.generation, opts).await.map_err(|e| e.to_string())?)
+        let mut opts = WriteOpts::new(actor(a.author), "");
+        opts.if_head_revision = a.if_head_revision;
+        json(self.svc.rollback(Ref::Path(&a.path), a.revision, opts).await.map_err(|e| e.to_string())?)
     }
 
-    #[tool(description = "Copy a file to another path (or to the same path as a new generation). Content is shared, not duplicated. To move a file, copy it then delete the source.")]
+    #[tool(description = "Copy a file to another path, or to its own path as a new revision. Content is shared, not duplicated.")]
     async fn drawer_copy(&self, Parameters(a): Parameters<CopyArg>) -> Result<String, String> {
-        let mut opts = WriteOpts::new(a.author.unwrap_or_else(|| "agent".into()), a.comment.unwrap_or_default());
-        opts.if_generation_match = a.if_generation_match;
-        json(self.svc.copy(&a.from, &a.to, a.source_generation, opts).await.map_err(|e| e.to_string())?)
+        let mut opts = WriteOpts::new(actor(a.author), a.comment.unwrap_or_default());
+        opts.if_head_revision = a.if_head_revision;
+        json(
+            self.svc
+                .copy(Ref::Path(&a.from), &a.to, a.source_revision, opts)
+                .await
+                .map_err(|e| e.to_string())?,
+        )
     }
 
-    #[tool(description = "Search file names and text contents.")]
+    #[tool(description = "Rename or move a file or folder. Keeps its id, history and sharing. Creates missing destination folders.")]
+    async fn drawer_move(&self, Parameters(a): Parameters<MoveArg>) -> Result<String, String> {
+        json(self.svc.move_to(Ref::Path(&a.from), &a.to, &actor(a.author)).await.map_err(|e| e.to_string())?)
+    }
+
+    #[tool(description = "Star or unstar a file or folder.")]
+    async fn drawer_star(&self, Parameters(a): Parameters<StarArg>) -> Result<String, String> {
+        let node = self.svc.stat(Ref::Path(&a.path)).await.map_err(|e| e.to_string())?;
+        let u = NodeUpdate { starred: Some(a.starred), ..NodeUpdate::default() };
+        json(self.svc.update(&node.id, u, &actor(a.author)).await.map_err(|e| e.to_string())?)
+    }
+
+    #[tool(description = "List the top-most items in the trash, with their ids.")]
+    async fn drawer_trash(&self) -> Result<String, String> {
+        json(self.svc.trash_list().await.map_err(|e| e.to_string())?)
+    }
+
+    #[tool(description = "Restore a trashed file or folder by id. Its parent folder must not be in the trash.")]
+    async fn drawer_restore(&self, Parameters(a): Parameters<IdArg>) -> Result<String, String> {
+        let u = NodeUpdate { trashed: Some(false), ..NodeUpdate::default() };
+        json(self.svc.update(&a.id, u, &actor(a.author)).await.map_err(|e| e.to_string())?)
+    }
+
+    #[tool(description = "Permanently delete a trashed file or folder by id, with its history. This cannot be undone.")]
+    async fn drawer_purge(&self, Parameters(a): Parameters<IdArg>) -> Result<String, String> {
+        self.svc.purge(&a.id, &actor(a.author)).await.map_err(|e| e.to_string())?;
+        Ok("deleted forever".into())
+    }
+
+    #[tool(description = "Grant a principal a role (reader, writer or owner) on a file or folder. Applies to everything below it.")]
+    async fn drawer_share(&self, Parameters(a): Parameters<ShareArg>) -> Result<String, String> {
+        let node = self.svc.stat(Ref::Path(&a.path)).await.map_err(|e| e.to_string())?;
+        json(
+            self.svc
+                .share(&node.id, &a.principal, &a.role, &actor(a.author))
+                .await
+                .map_err(|e| e.to_string())?,
+        )
+    }
+
+    #[tool(description = "Remove a principal's grant on a file or folder.")]
+    async fn drawer_unshare(&self, Parameters(a): Parameters<UnshareArg>) -> Result<String, String> {
+        let node = self.svc.stat(Ref::Path(&a.path)).await.map_err(|e| e.to_string())?;
+        json(self.svc.unshare(&node.id, &a.principal, &actor(a.author)).await.map_err(|e| e.to_string())?)
+    }
+
+    #[tool(description = "List starred files and folders.")]
+    async fn drawer_starred(&self) -> Result<String, String> {
+        json(self.svc.starred().await.map_err(|e| e.to_string())?)
+    }
+
+    #[tool(description = "Search live file names and text contents.")]
     async fn drawer_search(&self, Parameters(a): Parameters<SearchArg>) -> Result<String, String> {
         json(self.svc.search(&a.query, a.limit.unwrap_or(20)).await.map_err(|e| e.to_string())?)
     }

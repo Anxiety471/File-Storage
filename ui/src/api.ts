@@ -1,29 +1,41 @@
-export interface Entry {
+export interface Node {
+  id: string;
+  parent_id: string | null;
   name: string;
   path: string;
   kind: "file" | "folder";
+  owner: string;
+  head_revision: number | null;
+  hash: string | null;
   size: number | null;
-  generation: number | null;
-  updated_at: string;
+  mime: string | null;
+  properties: Record<string, string>;
+  trashed: boolean;
+  starred: boolean;
+  created_at: string;
+  modified_at: string;
 }
 
-export interface Generation {
-  path: string;
-  generation: number;
+export interface Revision {
+  node_id: string;
+  revision: number;
   hash: string;
   size: number;
   mime: string;
   author: string;
   comment: string;
-  metadata: Record<string, string>;
+  properties: Record<string, string>;
   created_at: string;
 }
 
-export interface WriteOutcome extends Generation {
-  new_generation: boolean;
+export interface WriteOutcome {
+  node: Node;
+  revision: number;
+  new_revision: boolean;
 }
 
 export interface SearchHit {
+  id: string;
   path: string;
   matched: "name" | "content";
   snippet: string;
@@ -46,29 +58,32 @@ async function check(r: Response): Promise<Response> {
 }
 
 const q = (path: string, extra = "") => `path=${encodeURIComponent(path)}${extra}`;
+const json = (method: string, body: unknown): RequestInit => ({
+  method,
+  headers: headers({ "content-type": "application/json" }),
+  body: JSON.stringify(body),
+});
 
 export const api = {
-  async tree(path: string): Promise<Entry[]> {
+  async tree(path: string): Promise<Node[]> {
     const r = await check(await fetch(`${BASE}/tree?${q(path)}`, { headers: headers() }));
     return (await r.json()).entries;
   },
-  async mkdir(path: string): Promise<void> {
-    await check(
-      await fetch(`${BASE}/folders`, {
-        method: "POST",
-        headers: headers({ "content-type": "application/json" }),
-        body: JSON.stringify({ path }),
-      }),
-    );
+  async stat(path: string): Promise<Node> {
+    const r = await check(await fetch(`${BASE}/files/meta?${q(path)}`, { headers: headers() }));
+    return r.json();
   },
-  async read(path: string, generation?: number): Promise<string> {
-    const extra = generation ? `&generation=${generation}` : "";
+  async mkdir(path: string): Promise<void> {
+    await check(await fetch(`${BASE}/folders`, json("POST", { path })));
+  },
+  async read(path: string, revision?: number): Promise<string> {
+    const extra = revision ? `&revision=${revision}` : "";
     const r = await check(await fetch(`${BASE}/files?${q(path, extra)}`, { headers: headers() }));
     return r.text();
   },
-  // ifGenerationMatch: 0 = create only; N = only if the live generation is still N.
-  async write(path: string, content: string, comment: string, ifGenerationMatch?: number): Promise<WriteOutcome> {
-    const guard = ifGenerationMatch === undefined ? "" : `&if_generation_match=${ifGenerationMatch}`;
+  // ifHeadRevision: 0 = create only; N = only if the head is still N. A stale save gets a 412.
+  async write(path: string, content: string, comment: string, ifHeadRevision?: number): Promise<WriteOutcome> {
+    const guard = ifHeadRevision === undefined ? "" : `&if_head_revision=${ifHeadRevision}`;
     const r = await check(
       await fetch(`${BASE}/files?${q(path, guard)}`, {
         method: "PUT",
@@ -78,26 +93,41 @@ export const api = {
     );
     return r.json();
   },
-  async remove(path: string): Promise<void> {
+  // Moves the file to the trash. Restore it from the Trash view.
+  async trash(path: string): Promise<void> {
     await check(await fetch(`${BASE}/files?${q(path)}`, { method: "DELETE", headers: headers() }));
   },
-  async generations(path: string): Promise<Generation[]> {
-    const r = await check(await fetch(`${BASE}/generations?${q(path)}`, { headers: headers() }));
-    return (await r.json()).generations;
+  async revisions(path: string): Promise<Revision[]> {
+    const r = await check(await fetch(`${BASE}/revisions?${q(path)}`, { headers: headers() }));
+    return (await r.json()).revisions;
   },
-  async rollback(path: string, generation: number): Promise<void> {
+  async rollback(path: string, revision: number): Promise<void> {
+    await check(await fetch(`${BASE}/rollback`, json("POST", { path, revision, author: "ui" })));
+  },
+  async update(id: string, patch: { name?: string; starred?: boolean; trashed?: boolean }): Promise<Node> {
+    const r = await check(
+      await fetch(`${BASE}/nodes/${encodeURIComponent(id)}`, {
+        ...json("PATCH", patch),
+        headers: headers({ "content-type": "application/json", "x-drawer-author": "ui" }),
+      }),
+    );
+    return r.json();
+  },
+  // Permanent: the node must already be in the trash.
+  async purge(id: string): Promise<void> {
     await check(
-      await fetch(`${BASE}/rollback`, {
-        method: "POST",
-        headers: headers({ "content-type": "application/json" }),
-        body: JSON.stringify({ path, generation, author: "ui" }),
+      await fetch(`${BASE}/nodes/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: headers({ "x-drawer-author": "ui" }),
       }),
     );
   },
+  async trashed(): Promise<Node[]> {
+    const r = await check(await fetch(`${BASE}/trash`, { headers: headers() }));
+    return (await r.json()).nodes;
+  },
   async search(query: string): Promise<SearchHit[]> {
-    const r = await check(
-      await fetch(`${BASE}/search?q=${encodeURIComponent(query)}`, { headers: headers() }),
-    );
+    const r = await check(await fetch(`${BASE}/search?q=${encodeURIComponent(query)}`, { headers: headers() }));
     return (await r.json()).hits;
   },
 };

@@ -1,18 +1,21 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, Entry, Generation, SearchHit } from "./api";
+import { api, Node, Revision, SearchHit } from "./api";
 
 const parentOf = (p: string) => (p.lastIndexOf("/") <= 0 ? "/" : p.slice(0, p.lastIndexOf("/")));
 const join = (dir: string, name: string) => (dir === "/" ? `/${name}` : `${dir}/${name}`);
 
 export function App() {
   const [dir, setDir] = useState("/");
-  const [entries, setEntries] = useState<Entry[]>([]);
+  const [entries, setEntries] = useState<Node[]>([]);
+  const [showTrash, setShowTrash] = useState(false);
+  const [bin, setBin] = useState<Node[]>([]);
   const [file, setFile] = useState<string | null>(null);
+  const [node, setNode] = useState<Node | null>(null);
   const [content, setContent] = useState("");
   const [saved, setSaved] = useState("");
-  const [generations, setGenerations] = useState<Generation[]>([]);
+  const [revisions, setRevisions] = useState<Revision[]>([]);
   const [viewing, setViewing] = useState<number | null>(null);
-  // The live generation this editor was opened on; saves are guarded on it.
+  // The head revision this editor was opened on; saves are guarded on it.
   const [loaded, setLoaded] = useState<number | null>(null);
   const [comment, setComment] = useState("");
   const [query, setQuery] = useState("");
@@ -33,20 +36,31 @@ export function App() {
       run(async () => {
         setEntries(await api.tree(d));
         setDir(d);
+        setShowTrash(false);
       }),
     [run],
   );
 
+  const loadBin = useCallback(() => run(async () => {
+    setBin(await api.trashed());
+    setShowTrash(true);
+  }), [run]);
+
   const openFile = useCallback(
-    (path: string, generation?: number) =>
+    (path: string, revision?: number) =>
       run(async () => {
-        const [text, gens] = await Promise.all([api.read(path, generation), api.generations(path)]);
+        const [text, meta, revs] = await Promise.all([
+          api.read(path, revision),
+          api.stat(path),
+          api.revisions(path),
+        ]);
         setFile(path);
+        setNode(meta);
         setContent(text);
         setSaved(text);
-        setGenerations(gens);
-        setLoaded(gens[0]?.generation ?? null);
-        setViewing(generation ?? null);
+        setRevisions(revs);
+        setLoaded(meta.head_revision);
+        setViewing(revision ?? null);
         setComment("");
       }),
     [run],
@@ -57,6 +71,7 @@ export function App() {
   }, [loadDir]);
 
   const crumbs = dir.split("/").filter(Boolean);
+  const head = revisions[0]?.revision;
 
   return (
     <div className="app">
@@ -82,11 +97,40 @@ export function App() {
                 {c}/
               </a>
             ))}
+            <a className="trash-link" onClick={loadBin}>
+              Trash
+            </a>
           </nav>
-          {hits ? (
+          {showTrash ? (
+            <ul>
+              {bin.map((n) => (
+                <li key={n.id}>
+                  {n.kind === "folder" ? "▸ " : ""}
+                  {n.path}
+                  <small>
+                    <button onClick={() => run(async () => { await api.update(n.id, { trashed: false }); await loadBin(); })}>
+                      Restore
+                    </button>
+                    <button
+                      onClick={() =>
+                        confirm(`Delete ${n.path} forever? This cannot be undone.`) &&
+                        run(async () => { await api.purge(n.id); await loadBin(); })
+                      }
+                    >
+                      Delete forever
+                    </button>
+                  </small>
+                </li>
+              ))}
+              {bin.length === 0 && <li className="muted">Trash is empty</li>}
+              <li className="muted" onClick={() => loadDir(dir)}>
+                back to files
+              </li>
+            </ul>
+          ) : hits ? (
             <ul>
               {hits.map((h) => (
-                <li key={h.path} onClick={() => openFile(h.path)}>
+                <li key={h.id} onClick={() => openFile(h.path)}>
                   <b>{h.path}</b>
                   <small>{h.matched === "name" ? "name match" : h.snippet}</small>
                 </li>
@@ -101,13 +145,14 @@ export function App() {
               {dir !== "/" && <li onClick={() => loadDir(parentOf(dir))}>..</li>}
               {entries.map((e) => (
                 <li
-                  key={e.path}
+                  key={e.id}
                   className={e.path === file ? "active" : ""}
                   onClick={() => (e.kind === "folder" ? loadDir(e.path) : openFile(e.path))}
                 >
                   {e.kind === "folder" ? "▸ " : ""}
+                  {e.starred ? "★ " : ""}
                   {e.name}
-                  {e.kind === "file" && <small>g{e.generation}</small>}
+                  {e.kind === "file" && <small>r{e.head_revision}</small>}
                 </li>
               ))}
               {entries.length === 0 && <li className="muted">Empty folder</li>}
@@ -117,12 +162,14 @@ export function App() {
             <button
               onClick={() => {
                 const name = prompt("New file name");
-                if (name) run(async () => {
-                  const path = join(dir, name);
-                  await api.write(path, "", "created in UI", 0);
-                  await loadDir(dir);
-                  await openFile(path);
-                });
+                if (name)
+                  run(async () => {
+                    const path = join(dir, name);
+                    // create only: never overwrite a file that is already there
+                    await api.write(path, "", "created in UI", 0);
+                    await loadDir(dir);
+                    await openFile(path);
+                  });
               }}
             >
               New file
@@ -130,10 +177,11 @@ export function App() {
             <button
               onClick={() => {
                 const name = prompt("New folder name");
-                if (name) run(async () => {
-                  await api.mkdir(join(dir, name));
-                  await loadDir(dir);
-                });
+                if (name)
+                  run(async () => {
+                    await api.mkdir(join(dir, name));
+                    await loadDir(dir);
+                  });
               }}
             >
               New folder
@@ -141,23 +189,33 @@ export function App() {
           </div>
         </aside>
         <section>
-          {file ? (
+          {file && node ? (
             <>
               <div className="bar">
                 <b>{file}</b>
-                {viewing && <span className="badge">viewing old generation {viewing} (read-only)</span>}
+                {viewing && <span className="badge">viewing revision {viewing} (read-only)</span>}
                 <span className="spacer" />
                 <button
+                  onClick={() =>
+                    run(async () => {
+                      setNode(await api.update(node.id, { starred: !node.starred }));
+                    })
+                  }
+                >
+                  {node.starred ? "Unstar" : "Star"}
+                </button>
+                <button
                   onClick={() => {
-                    if (confirm(`Delete ${file}? History is kept.`))
+                    if (confirm(`Move ${file} to the trash? You can restore it from there.`))
                       run(async () => {
-                        await api.remove(file);
+                        await api.trash(file);
                         setFile(null);
+                        setNode(null);
                         await loadDir(dir);
                       });
                   }}
                 >
-                  Delete
+                  Move to trash
                 </button>
               </div>
               <textarea value={content} readOnly={viewing !== null} onChange={(e) => setContent(e.target.value)} />
@@ -174,27 +232,27 @@ export function App() {
                       })
                     }
                   >
-                    Save new generation
+                    Save new revision
                   </button>
                 </div>
               )}
               <h3>History</h3>
               <ul className="versions">
-                {generations.map((g) => (
-                  <li key={g.generation}>
-                    <b>g{g.generation}</b> {g.author} · {new Date(g.created_at).toLocaleString()} · {g.size} B
-                    {g.comment && <em> — {g.comment}</em>}
-                    {Object.entries(g.metadata).map(([k, v]) => (
-                      <code key={k}> {k}={v}</code>
+                {revisions.map((v) => (
+                  <li key={v.revision}>
+                    <b>r{v.revision}</b> {v.author} · {new Date(v.created_at).toLocaleString()} · {v.size} B
+                    {v.comment && <em> — {v.comment}</em>}
+                    {Object.entries(v.properties).map(([k, x]) => (
+                      <code key={k}> {k}={x}</code>
                     ))}
                     <span className="spacer" />
-                    <button onClick={() => openFile(file, g.generation === generations[0].generation ? undefined : g.generation)}>View</button>
-                    {g.generation !== generations[0].generation && (
+                    <button onClick={() => openFile(file, v.revision === head ? undefined : v.revision)}>View</button>
+                    {v.revision !== head && (
                       <button
                         onClick={() =>
-                          confirm(`Roll back to generation ${g.generation}? This adds a new generation.`) &&
+                          confirm(`Roll back to revision ${v.revision}? This adds a new revision.`) &&
                           run(async () => {
-                            await api.rollback(file, g.generation);
+                            await api.rollback(file, v.revision);
                             await openFile(file);
                           })
                         }
