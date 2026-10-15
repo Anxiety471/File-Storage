@@ -96,6 +96,14 @@ class ScanTests(unittest.TestCase):
             self.assertEqual(off.recorded, [])
             self.assertEqual(on.recorded, [["https://example.test/a"]])
 
+    def test_runtime_logs_are_skipped(self):
+        home = sync.HERMES_HOME
+        self.assertEqual(sync._skip_reason(home / "logs" / "agent.log"), "Hermes runtime log")
+        self.assertEqual(sync._skip_reason(home / "profiles" / "planner" / "logs" / "run.log"),
+                         "Hermes runtime log")
+        self.assertIsNone(sync._skip_reason(home / "cache" / "scratch" / "notes.md"))
+        self.assertIsNone(sync._skip_reason(home / "artifacts" / "report.md"))
+
     def test_schema_drift_is_reported_not_silent(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "state.db"
