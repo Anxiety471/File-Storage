@@ -75,6 +75,36 @@ into a subdirectory, since there is no `.git` there. It is cosmetic.
 Then `~/.hermes/artifacts/reports/plan.md` appears in Drawer at
 `/hermes/reports/plan.md`.
 
+## Scan existing artifact references
+
+The live hooks handle new `write_file`/`patch` calls and links in replies. To
+backfill artifact file paths already recorded in Hermes sessions, run:
+
+```sh
+python3 ~/.hermes/plugins/drawer-mirror/sync.py --hermes --dry-run
+python3 ~/.hermes/plugins/drawer-mirror/sync.py --hermes
+```
+
+The scanner reads assistant/tool messages from Hermes' `state.db`, resolves
+`MEDIA:` tags and absolute file paths that are under the scan root, and stores
+files at `/hermes/artifacts/<path relative to the scan root>` (so the UI does
+not expose the machine's `home/<user>/...` path). It compares SHA-256 hashes
+against Drawer's file metadata and skips identical files. New or changed
+content is sent once; re-running is safe. URLs are cleaned and deduplicated in
+`/hermes/links.md`.
+
+The default scan root is `~/.hermes`; override it with `DRAWER_SYNC_ROOTS` or
+`--roots`. The standalone command reads `DRAWER_*` values from
+`~/.hermes/.env`. It skips secret/credential names, Hermes' own `config.yaml`
+and `profile.yaml`, databases, symlinks, dependency/cache directories, and
+files above the configured size limit. Paths outside the scan root are never
+uploaded. The existing configured `root` setting is still required to provide
+Drawer connection settings to the scanner.
+
+To create the optional user-upload folder, create `/hermes/uploads` in Drawer
+(or navigate there and use **New folder**). Files uploaded in the Drawer UI
+are not copied back into Hermes; agents can browse them with Drawer MCP tools.
+
 ## Rules
 
 - **Only files under `DRAWER_MIRROR_ROOT` are sent.** Paths outside it, symlinks

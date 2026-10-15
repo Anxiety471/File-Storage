@@ -14,6 +14,10 @@ PLUGIN_DIR = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("drawer_mirror", PLUGIN_DIR / "__init__.py")
 mirror = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mirror)
+sync_spec = importlib.util.spec_from_file_location("drawer_mirror_sync", PLUGIN_DIR / "sync.py")
+assert sync_spec is not None and sync_spec.loader is not None
+sync = importlib.util.module_from_spec(sync_spec)
+sync_spec.loader.exec_module(sync)
 
 
 class FakeDrawer(BaseHTTPRequestHandler):
@@ -72,6 +76,20 @@ class Ctx:
 
 
 class MirrorTests(unittest.TestCase):
+    def test_sync_paths_are_relative_to_scan_root(self):
+        root = Path("/tmp/hermes-home")
+        path = root / "cache" / "scratch" / "output.png"
+        cfg = {"prefix": "/hermes"}
+        self.assertEqual(sync._remote_for_scan(mirror, cfg, path, [root]),
+                         "/hermes/artifacts/cache/scratch/output.png")
+
+    def test_sync_skips_hermes_configuration_and_secret_files(self):
+        self.assertEqual(sync._skip_reason(sync.HERMES_HOME / "config.yaml"), "Hermes configuration")
+        self.assertEqual(sync._skip_reason(sync.HERMES_HOME / "profiles" / "agent" / "config.yaml"),
+                         "Hermes configuration")
+        self.assertEqual(sync._skip_reason(sync.HERMES_HOME / ".env"), "secret file")
+        self.assertIsNone(sync._skip_reason(sync.HERMES_HOME / "artifacts" / "report.md"))
+
     @classmethod
     def setUpClass(cls):
         cls.server = HTTPServer(("127.0.0.1", 0), FakeDrawer)
