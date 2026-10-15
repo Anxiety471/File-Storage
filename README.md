@@ -19,7 +19,7 @@ Agents write files all day and sooner or later one of them overwrites something 
 Linux and macOS, one command:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Anxiety471/File-Storage/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Anxiety471/drawer/main/install.sh | sh
 drawer serve                                # http://127.0.0.1:8787
 ```
 
