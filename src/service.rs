@@ -117,6 +117,16 @@ impl WriteOpts {
     }
 }
 
+/// Counts for `drawer doctor` and the like.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Stats {
+    pub files: i64,
+    pub folders: i64,
+    /// Top-most trashed nodes, the same things the trash lists.
+    pub trashed: i64,
+    pub revisions: i64,
+}
+
 /// Fields that `Drawer::update` changes. `None` leaves a field as it is.
 #[derive(Debug, Clone, Default)]
 pub struct NodeUpdate {
@@ -608,6 +618,42 @@ impl Drawer {
         }
         let needed = if need == OWNER { "owner" } else { "writer" };
         Err(Error::Forbidden(format!("{actor} needs {needed} access to this node")))
+    }
+
+    /// Result of SQLite's `PRAGMA quick_check`: `ok` for a healthy database.
+    pub async fn integrity_check(&self) -> Result<String> {
+        Ok(sqlx::query_scalar("PRAGMA quick_check").fetch_one(&self.pool).await?)
+    }
+
+    pub async fn stats(&self) -> Result<Stats> {
+        let row = sqlx::query(
+            "SELECT \
+                (SELECT COUNT(*) FROM nodes WHERE kind = 'file' AND trashed = 0) AS files, \
+                (SELECT COUNT(*) FROM nodes WHERE kind = 'folder' AND trashed = 0 AND id <> 'root') AS folders, \
+                (SELECT COUNT(*) FROM nodes WHERE trashed = 1 AND parent_id IN (SELECT id FROM nodes WHERE trashed = 0)) AS trashed, \
+                (SELECT COUNT(*) FROM revisions) AS revisions",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(Stats {
+            files: row.get("files"),
+            folders: row.get("folders"),
+            trashed: row.get("trashed"),
+            revisions: row.get("revisions"),
+        })
+    }
+
+    /// Blob hashes that a revision points at but that are missing from disk.
+    pub async fn missing_blobs(&self) -> Result<Vec<String>> {
+        let rows = sqlx::query("SELECT DISTINCT hash FROM revisions ORDER BY hash").fetch_all(&self.pool).await?;
+        let mut missing = Vec::new();
+        for r in rows {
+            let hash: String = r.get("hash");
+            if !self.blobs.contains(&hash).await? {
+                missing.push(hash);
+            }
+        }
+        Ok(missing)
     }
 
     // ----- reads ---------------------------------------------------------------------------
