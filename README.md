@@ -23,6 +23,17 @@ Not yet: real user accounts (actors are self-declared, so grants are cooperative
 
 Upgrading: stores created on the earlier path-keyed schema are migrated in place on open. Their trashed files land in the trash. Write responses changed: `created` is now `new_revision`, and `version` is now `revision`.
 
+## Install
+
+Linux and macOS, one command:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Anxiety471/File-Storage/main/install.sh | sh
+drawer serve                                # http://127.0.0.1:8787
+```
+
+The script downloads the release for your machine, checks its SHA-256, and puts `drawer` in `~/.local/bin` with the UI in `~/.local/share/drawer/ui`. If no release exists yet it builds from source with cargo (installing Rust via rustup if needed). Set `DRAWER_PREFIX`, `DRAWER_VERSION` or `DRAWER_SOURCE=1` to change that.
+
 ## Run
 
 ```sh
@@ -30,7 +41,9 @@ cd ui && npm ci && npm run build && cd ..   # optional, for the UI
 cargo run --release -- serve                # http://127.0.0.1:8787
 ```
 
-Options: `--data-dir` (`DRAWER_DATA_DIR`, default `./data`), `--addr` (`DRAWER_ADDR`), `--token` (`DRAWER_TOKEN`), `--ui-dir` (`DRAWER_UI_DIR`).
+Options: `--data-dir` (`DRAWER_DATA_DIR`, default `./data`), `--addr` (`DRAWER_ADDR`), `--token` (`DRAWER_TOKEN`), `--ui-dir` (`DRAWER_UI_DIR`, default `./ui/dist`, then `../share/drawer/ui` beside the binary).
+
+Releases: pushing a `v*` tag builds Linux (x86_64, aarch64) and macOS (x86_64, aarch64) binaries and attaches them with `SHA256SUMS` (`.github/workflows/release.yml`).
 
 ## MCP (Hermes Agent and others)
 
