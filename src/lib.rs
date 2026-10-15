@@ -33,7 +33,9 @@ pub fn app(svc: Drawer, token: Option<String>, ui_dir: Option<PathBuf>) -> Route
         Arc::new(LocalSessionManager::default()),
         StreamableHttpServerConfig::default(),
     );
+    // Top level, ahead of the UI fallback, so `/health` is never answered with index.html.
     let mut app = Router::new()
+        .route("/health", axum::routing::get(api::health))
         .nest("/drawer/v1", api::router().with_state(svc).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)))
         .nest_service("/mcp", mcp)
         .layer(middleware::from_fn(session_delete_ok));

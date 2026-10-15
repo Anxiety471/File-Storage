@@ -11,6 +11,10 @@ Two observer hooks:
   files on disk, so they are recorded as text. Set ``DRAWER_MIRROR_LINKS=0`` to
   turn this off.
 
+Settings come from ``plugins.entries.drawer-mirror.settings`` (declared in plugin.yaml's
+``config_schema``) and fall back to the environment variables, so an older ``.env`` setup
+keeps working. The Drawer token stays in ``.env``: it is a secret.
+
 Hermes keeps its own files, memory and artifacts exactly as before. Mirroring is
 best-effort: failures are logged and never change what the tool or the turn returned.
 """
@@ -30,6 +34,9 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# Set by register(). Hermes' config accessor for this plugin's settings, if it was given.
+_CTX: Any = None
+
 MIRRORED_TOOLS = frozenset({"write_file", "patch"})
 DEFAULT_URL = "http://127.0.0.1:8787"
 DEFAULT_PREFIX = "/hermes"
@@ -44,28 +51,41 @@ _URL_RE = re.compile(r"https?://[^\s<>\"'`)\]]+")
 _LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 
 
+def _setting(key: str, env: str) -> Optional[str]:
+    """A non-empty setting: Hermes config (plugins.entries.drawer-mirror.settings.<key>) first,
+    then the environment variable. Read on every call, so a changed value applies without a restart."""
+    if _CTX is not None:
+        try:
+            value = _CTX.get_config(key, default=None)
+        except Exception:  # noqa: BLE001 - unreadable config must not break the hook
+            value = None
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return os.environ.get(env, "").strip() or None
+
+
 def _settings() -> Optional[dict[str, Any]]:
-    """Read the environment on every call, so a changed .env applies without code changes."""
-    raw_root = os.environ.get("DRAWER_MIRROR_ROOT", "").strip()
+    """Read the settings on every call, so a changed .env or config applies without code changes."""
+    raw_root = _setting("root", "DRAWER_MIRROR_ROOT")
     if not raw_root:
         return None
     root = Path(raw_root).expanduser().resolve()
     hermes_home = Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser().resolve()
     # The root must not contain Hermes' own home: that would sweep up config.yaml and .env.
     if root == hermes_home or root in hermes_home.parents:
-        logger.error("drawer-mirror: DRAWER_MIRROR_ROOT=%s contains HERMES_HOME; mirroring is off", root)
+        logger.error("drawer-mirror: the mirror root %s contains HERMES_HOME; mirroring is off", root)
         return None
-    prefix = os.environ.get("DRAWER_MIRROR_PREFIX", DEFAULT_PREFIX).strip() or DEFAULT_PREFIX
+    prefix = _setting("prefix", "DRAWER_MIRROR_PREFIX") or DEFAULT_PREFIX
     if not prefix.startswith("/"):
         prefix = "/" + prefix
-    max_bytes = os.environ.get("DRAWER_MIRROR_MAX_BYTES", "").strip()
-    links = os.environ.get("DRAWER_MIRROR_LINKS", "1").strip().lower() not in ("0", "false", "no", "off")
+    max_bytes = _setting("max_bytes", "DRAWER_MIRROR_MAX_BYTES") or ""
+    links = (_setting("links", "DRAWER_MIRROR_LINKS") or "1").lower() not in ("0", "false", "no", "off")
     return {
         "root": root,
-        "url": os.environ.get("DRAWER_URL", DEFAULT_URL).rstrip("/"),
+        "url": (_setting("url", "DRAWER_URL") or DEFAULT_URL).rstrip("/"),
         "token": os.environ.get("DRAWER_TOKEN", "").strip(),
         "prefix": prefix.rstrip("/"),
-        "author": os.environ.get("DRAWER_MIRROR_AUTHOR", DEFAULT_AUTHOR).strip() or DEFAULT_AUTHOR,
+        "author": _setting("author", "DRAWER_MIRROR_AUTHOR") or DEFAULT_AUTHOR,
         "max_bytes": int(max_bytes) if max_bytes.isdigit() else DEFAULT_MAX_BYTES,
         "links": links,
     }
@@ -84,8 +104,11 @@ def _files_request(cfg: dict[str, Any], remote: str, method: str = "GET", data: 
     return urllib.request.Request(url, data=data, method=method, headers=all_headers)
 
 
-def _tool_failed(result: Any) -> bool:
-    """A tool result is a JSON string. Mirror only results that did not report an error."""
+def _tool_failed(result: Any, status: Any = None) -> bool:
+    """Hermes 0.22+ reports the outcome as ``status`` (``error`` on failure). Older versions
+    only put the error in the result, a JSON string, so parse that as a fallback."""
+    if isinstance(status, str) and status:
+        return status == "error"
     try:
         parsed = json.loads(result) if isinstance(result, str) else result
     except (TypeError, ValueError):
@@ -122,9 +145,9 @@ def _mirror_file(path_arg: str, tool_name: str, cfg: dict[str, Any]) -> None:
 
 
 def _on_post_tool_call(tool_name: str = "", args: Optional[dict[str, Any]] = None,
-                       result: Any = "", **_: Any) -> None:
+                       result: Any = "", status: Optional[str] = None, **_: Any) -> None:
     """Observer: runs after every tool call and never raises, so it cannot break a turn."""
-    if tool_name not in MIRRORED_TOOLS or not isinstance(args, dict) or _tool_failed(result):
+    if tool_name not in MIRRORED_TOOLS or not isinstance(args, dict) or _tool_failed(result, status):
         return
     path_arg = args.get("path")
     if not isinstance(path_arg, str) or not path_arg:
@@ -218,5 +241,7 @@ def _on_post_llm_call(assistant_response: str = "", session_id: str = "", **_: A
 
 
 def register(ctx: Any) -> None:
+    global _CTX
+    _CTX = ctx
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_hook("post_llm_call", _on_post_llm_call)

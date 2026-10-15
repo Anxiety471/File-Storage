@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install Drawer: curl -fsSL https://raw.githubusercontent.com/Anxiety471/File-Storage/main/install.sh | sh
+# Install Drawer: curl -fsSL https://raw.githubusercontent.com/Anxiety471/drawer/main/install.sh | sh
 #
 # Downloads the prebuilt release for this machine and verifies its checksum.
 # If there is no release for this platform yet, builds from source with cargo.
@@ -8,11 +8,11 @@
 #   DRAWER_PREFIX   install root, default ~/.local (binary in bin/, UI in share/drawer/ui)
 #   DRAWER_VERSION  release tag to install, default latest
 #   DRAWER_REF      branch used for the source fallback, default main
-#   DRAWER_REPO     GitHub owner/repo, default Anxiety471/File-Storage
+#   DRAWER_REPO     GitHub owner/repo, default Anxiety471/drawer
 #   DRAWER_SOURCE=1 skip the release download and build from source
 set -eu
 
-REPO="${DRAWER_REPO:-Anxiety471/File-Storage}"
+REPO="${DRAWER_REPO:-Anxiety471/drawer}"
 VERSION="${DRAWER_VERSION:-latest}"
 REF="${DRAWER_REF:-main}"
 PREFIX="${DRAWER_PREFIX:-$HOME/.local}"

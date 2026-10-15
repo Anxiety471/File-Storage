@@ -82,9 +82,14 @@ struct SearchQ {
     limit: Option<usize>,
 }
 
+/// Liveness probe, served at `/health` and `/drawer/v1/health`.
+pub async fn health() -> Json<Value> {
+    Json(json!({ "ok": true }))
+}
+
 pub fn router() -> Router<Drawer> {
     Router::new()
-        .route("/health", get(|| async { Json(json!({ "ok": true })) }))
+        .route("/health", get(health))
         .route("/tree", get(tree))
         .route("/folders", post(mkdir).delete(delete_file))
         .route("/files", get(read_file).put(write_file).delete(delete_file))
