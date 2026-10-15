@@ -9,11 +9,15 @@ Stdio and HTTP can point at the same data directory at the same time (SQLite in 
 
 Tested clients: the official Python MCP SDK (which Hermes is built on) and the official TypeScript MCP SDK (used by Claude Desktop, Cursor, VS Code and Gemini CLI), both over stdio and over HTTP with a bearer token. The Rust test suite uses rmcp, the SDK that Codex is built on.
 
+`drawer mcp-config --format <harness>` prints every config below for your binary and store, so you rarely need to type one by hand. Add `--url http://127.0.0.1:8787/mcp` for the shared HTTP form, and `--name` to call the server something other than `drawer`.
+
 ## What harnesses get
 
-- 18 tools named `drawer_*`. Hermes shows them as `mcp_<server>_drawer_*`.
-- Server instructions explaining revisions, `if_head_revision` and base64. Most harnesses add these to the model's context.
-- Tool annotations. Reads are marked read-only, so harnesses that auto-approve read-only tools can do so. `drawer_purge` is marked destructive. Writes, moves and trash are reversible, because history and the trash keep everything.
+- 21 tools named `drawer_*`. Hermes shows them as `mcp_<server>_drawer_*`, Claude Code as `mcp__<server>__drawer_*`.
+- Server instructions explaining revisions, `drawer_edit`, `if_head_revision` and base64. Most harnesses add these to the model's context.
+- Tool titles and annotations. Reads are marked read-only, so harnesses that auto-approve read-only tools can do so. `drawer_purge` is marked destructive. Writes, edits, moves and trash are reversible, because history and the trash keep everything.
+- Attribution without setup. A call with no `author` is recorded under the client's MCP name (`claude-code`, `codex-mcp-client`, `gemini-cli-mcp-client`, `Visual Studio Code`, ...). For stdio, `drawer --author NAME stdio` or `DRAWER_AUTHOR` sets it instead, which helps when several agents of the same harness share a store.
+- Bounded results. Text reads are cut at 2000 lines or 256 KB with a note on how to page (`offset`, `limit`), and results are compact JSON, so they fit the tool-output limits of Claude Code, Codex and others.
 - Input schemas restricted to the portable JSON Schema subset: no `$schema`, `format`, `additionalProperties` or `["type", "null"]` unions. Gemini and other strict model APIs accept them as-is.
 - Binary files go in and out as base64 with `encoding: "base64"`. `drawer_read` returns PNG, JPEG, GIF and WebP files as MCP image content, so vision models can look at them.
 
@@ -56,6 +60,8 @@ with `DRAWER_MIRROR_ROOT=~/.hermes/artifacts` in `~/.hermes/.env`.
 
 ## Claude Code
 
+`drawer mcp-config --format claude-code` prints the command.
+
 ```sh
 claude mcp add drawer -- /usr/local/bin/drawer --data-dir /srv/drawer-data stdio
 # or, shared:
@@ -76,7 +82,7 @@ claude mcp add --transport http drawer http://127.0.0.1:8787/mcp --header "Autho
 
 ## OpenAI Codex CLI
 
-`~/.codex/config.toml`:
+`~/.codex/config.toml` (`drawer mcp-config --format codex`):
 
 ```toml
 [mcp_servers.drawer]
@@ -91,7 +97,7 @@ args = ["--data-dir", "/srv/drawer-data", "stdio"]
 
 ## Gemini CLI
 
-`~/.gemini/settings.json`. Note that Gemini CLI uses `httpUrl` for streamable HTTP, while `url` means the older SSE transport.
+`~/.gemini/settings.json` (`drawer mcp-config --format gemini`). Note that Gemini CLI uses `httpUrl` for streamable HTTP, while `url` means the older SSE transport.
 
 ```json
 {
@@ -116,12 +122,25 @@ args = ["--data-dir", "/srv/drawer-data", "stdio"]
 
 ## VS Code (Copilot agent mode)
 
-`.vscode/mcp.json`:
+`.vscode/mcp.json` (`drawer mcp-config --format vscode`; with `--url` it adds a password prompt for the token):
 
 ```json
 {
   "servers": {
     "drawer": { "type": "stdio", "command": "/usr/local/bin/drawer", "args": ["--data-dir", "/srv/drawer-data", "stdio"] }
+  }
+}
+```
+
+## opencode
+
+`opencode.json` (`drawer mcp-config --format opencode`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "drawer": { "type": "local", "command": ["/usr/local/bin/drawer", "--data-dir", "/srv/drawer-data", "stdio"], "enabled": true }
   }
 }
 ```
@@ -146,7 +165,9 @@ tools = await client.get_tools()
 
 ## Harnesses without MCP
 
-Use the REST API at `/drawer/v1` (see the README). Files are plain HTTP: `PUT /drawer/v1/files?path=/a.md` with the raw bytes as the body, and `GET` to read them back.
+Use the REST API at `/drawer/v1` (see the README). Files are plain HTTP: `PUT /drawer/v1/files?path=/a.md` with the raw bytes as the body, and `GET` to read them back. `POST /drawer/v1/edit` does an exact-text replace, and `GET /drawer/v1/diff` and `/recent` show what changed.
+
+Shell-driven agents can also call the CLI directly: `drawer edit`, `drawer diff`, `drawer tree` and `drawer recent` all take `--json`.
 
 ## Limits worth knowing
 

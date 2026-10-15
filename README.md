@@ -25,15 +25,17 @@ drawer serve                                # http://127.0.0.1:8787
 
 The installer downloads the release for your machine, checks its SHA-256, and puts `drawer` in `~/.local/bin` with the UI in `~/.local/share/drawer/ui`. If no release exists for your platform it builds from source with cargo (installing Rust via rustup if needed).
 
-Then point an agent at it. For Hermes Agent, `drawer mcp-config` prints the entry to paste into `~/.hermes/config.yaml`. See [MCP and agent harnesses](#mcp-and-agent-harnesses).
+Then point an agent at it. `drawer mcp-config --format <harness>` prints the exact config for Hermes, Claude Code, Codex, Gemini CLI, VS Code, opencode, or any client that takes an `mcpServers` JSON block. See [MCP and agent harnesses](#mcp-and-agent-harnesses).
 
 ## Features
 
 - **Stable ids.** Every file and folder has an id that survives rename, move and trash. Moving a folder moves everything under it.
-- **Revisions.** Every save is a new immutable revision. Rolling back adds the old content as the new head, so nothing is lost.
+- **Revisions.** Every save is a new immutable revision, with its author. Diff any two revisions; rolling back adds the old content as the new head, so nothing is lost.
+- **Targeted edits.** Replace an exact piece of text instead of rewriting the whole file, saved as one guarded revision. Cheaper for agents and safe alongside other writers.
 - **Safe concurrent writes.** Writes accept `if_head_revision`. A stale writer gets `412 Precondition Failed` and nothing changes.
 - **Trash.** Deleting moves things to the trash, with their history. Restore by id, or purge for good.
-- **Star, search, copy, move.** Star files and folders, search names and contents, and copy without re-uploading: copies share content by hash.
+- **Star, search, copy, move.** Star files and folders, search names and contents (name matches first, content matches with line numbers), and copy without re-uploading: copies share content by hash.
+- **Recent activity.** See which files changed last and which agent or person changed them.
 - **Sharing.** Grant `reader`, `writer` or `owner` on a folder and it covers everything below. A node with no grants is open.
 - **Custom properties.** Key/value pairs stored with each revision.
 - **Any file type.** Stored byte-for-byte, up to 512 MB per upload.
@@ -44,7 +46,13 @@ Content is stored as sha256-addressed blobs on disk, and metadata lives in SQLit
 
 ## Web UI
 
-A Drive-style browser with My Drawer, Starred and Trash, a search box over names and contents, and a version history panel on every file.
+A Drive-style browser with My Drawer, Recent, Starred and Trash, a search box over names and contents (press `/`), and a version history panel on every file.
+
+- **Live.** Open folders and files pick up what agents save within a few seconds. An unchanged file reloads itself; one with unsaved edits shows who saved what instead of losing your work.
+- **See what changed.** Each revision in the history has a diff against the one before it.
+- **Organise.** Sort by name, modified or size; rename, move, copy and download from a row's menu (or right-click); trashing offers Undo.
+- **Links work.** The folder and open file are in the URL, so reload, back/forward and bookmarks do what you expect.
+- **Token prompt.** When the server runs with a token, the UI asks for it once and remembers it in the browser.
 
 <p align="center">
   <img src="docs/screenshots/history.png" alt="Version history for a Markdown file" width="860"><br>
@@ -63,8 +71,12 @@ drawer put - /notes/todo.md < todo.md     # from stdin; needs an explicit file p
 drawer ls -l /work                        # kind, revision, size, modified, name
 drawer cat /notes/todo.md > copy.md       # stdout; --revision N for an old one
 drawer get /work/report.pdf               # save to ./report.pdf; --force to overwrite
+drawer tree /work -L 2                    # folders and files as a tree
+drawer edit /notes/todo.md --old "- [ ] ship" --new "- [x] ship"   # exact-text replace, one revision
 drawer history /notes/todo.md             # revisions, newest first
+drawer diff /notes/todo.md                # what the latest revision changed; or: diff PATH FROM TO
 drawer rollback /notes/todo.md 2          # adds revision 2's bytes as the new head
+drawer recent                             # most recently changed files, and by whom
 drawer search "quarterly roadmap"         # names and contents
 drawer rm /notes/old.md                   # to the trash; the id is kept
 drawer trash                              # list it, with ids
@@ -74,16 +86,16 @@ drawer purge <id> --yes                   # gone for good
 
 | Group | Commands |
 | --- | --- |
-| Run | `serve` (default), `stdio`, `doctor`, `mcp-config` |
-| Files | `ls`, `mkdir`, `put`, `cat`, `get`, `stat`, `mv`, `cp` |
-| Versions | `history`, `rollback` (`cp` takes `--revision`, `cat` and `get` too) |
+| Run | `serve` (default), `stdio`, `doctor`, `mcp-config`, `completions <shell>` |
+| Files | `ls`, `tree`, `mkdir`, `put`, `edit`, `cat`, `get`, `stat`, `mv`, `cp` |
+| Versions | `history`, `diff`, `rollback`, `recent` (`cp` takes `--revision`, `cat` and `get` too) |
 | Trash | `rm`, `trash`, `restore <id>`, `purge <id> --yes` |
 | Search and stars | `search`, `star`, `unstar`, `starred` |
 | Sharing | `perms`, `share <path> <principal> <role>`, `unshare <path> <principal>` |
 
 Global flags: `--data-dir` (`DRAWER_DATA_DIR`, default `./data`), `--author` (`DRAWER_AUTHOR`, default `$USER`) which is recorded on every change, and `--json` for machine-readable output from commands that return data.
 
-`drawer doctor` checks database integrity, counts, missing blob files and whether the UI is built.
+`drawer doctor` checks database integrity, counts, missing blob files and whether the UI is built. `drawer completions bash|zsh|fish|powershell|elvish` prints a shell completion script.
 
 Writes are serialized inside one process. A CLI write while a server is writing to the same store can race it, so route concurrent writes through one or the other.
 
@@ -103,21 +115,40 @@ mcp_servers:
     args: ["--data-dir", "/srv/drawer-data", "stdio"]
 ```
 
-`drawer mcp-config` prints this for your paths. `drawer mcp-config --format json` prints an `mcpServers` block for Claude Desktop, Cursor and most other clients.
+`drawer mcp-config` prints this for your paths. Pick the harness with `--format`, and add `--url http://127.0.0.1:8787/mcp` to connect to a running server instead of starting one:
 
-The server exposes 18 tools:
+| `--format` | Prints |
+| --- | --- |
+| `hermes` (default) | YAML for `~/.hermes/config.yaml` |
+| `claude-code` | a `claude mcp add` command |
+| `codex` | TOML for `~/.codex/config.toml` |
+| `gemini` | JSON for `~/.gemini/settings.json` (`httpUrl` for HTTP) |
+| `vscode` | JSON for `.vscode/mcp.json`, with a password prompt for the token |
+| `opencode` | JSON for `opencode.json` |
+| `json` | an `mcpServers` block for Claude Desktop, Cursor, Windsurf and most others |
+
+The server exposes 21 tools:
 
 | Tools | |
 | --- | --- |
-| `drawer_list`, `drawer_stat`, `drawer_search`, `drawer_starred` | browse and find |
-| `drawer_mkdir`, `drawer_read`, `drawer_write` | create and change content |
-| `drawer_revisions`, `drawer_rollback`, `drawer_copy`, `drawer_move` | history and layout |
+| `drawer_list`, `drawer_stat`, `drawer_search`, `drawer_starred`, `drawer_recent` | browse and find |
+| `drawer_mkdir`, `drawer_read`, `drawer_write`, `drawer_edit` | create and change content |
+| `drawer_revisions`, `drawer_diff`, `drawer_rollback`, `drawer_copy`, `drawer_move` | history and layout |
 | `drawer_delete`, `drawer_trash`, `drawer_restore`, `drawer_purge` | trash lifecycle |
 | `drawer_star`, `drawer_share`, `drawer_unshare` | stars and grants |
 
-`drawer_read` and `drawer_write` take `encoding: "base64"` for binary files such as PDF, docx, xlsx or images. `drawer_read` returns PNG, JPEG, GIF and WebP images as image content so vision models can look at them. `drawer_purge` is the only destructive tool.
+Built for how agents work:
 
-For concurrent agents, read the file, then write with `if_head_revision` set to the revision you read. On a conflict, re-read and merge.
+- **Small edits stay small.** `drawer_edit` replaces an exact `old_string` with `new_string`, like the edit tools in Claude Code and Codex, so an agent doesn't resend a whole file to change a line.
+- **Whole trees in one call.** `drawer_list` with `depth` up to 10 lists everything below a folder with full paths.
+- **Reads say what to guard on.** `drawer_read` follows text with a `[drawer]` line giving the revision to pass as `if_head_revision`. Long files are cut at 2000 lines (or 256 KB) with a note saying how to page with `offset` and `limit`, so one read can't flood the context.
+- **Lean results.** Tool results are compact JSON, and listings carry only what an agent acts on: path, kind, id, revision, size, type, when and by whom.
+- **History knows who.** Calls that don't pass `author` are recorded under the client's own MCP name (`claude-code`, `codex-mcp-client`, `gemini-cli-mcp-client`, ...), or under `--author` / `DRAWER_AUTHOR` for `drawer stdio`. `drawer_recent` and `drawer_diff` then show what each agent did.
+- **Portable schemas and hints.** Input schemas avoid the JSON Schema features Gemini and other strict APIs reject. Every tool has a display title and read-only/destructive hints, so harnesses can auto-approve reads and confirm `drawer_purge`, the only destructive tool.
+
+`drawer_read` and `drawer_write` take `encoding: "base64"` for binary files such as PDF, docx, xlsx or images. `drawer_read` returns PNG, JPEG, GIF and WebP images as image content so vision models can look at them.
+
+For concurrent agents, read the file, then write with `if_head_revision` set to the revision you read (or use `drawer_edit`, which guards itself). On a conflict, re-read and merge.
 
 Setup for Hermes, Claude Code, Claude Desktop, Codex, Gemini CLI, Cursor, VS Code, the OpenAI Agents SDK and LangChain is in [docs/harnesses.md](docs/harnesses.md).
 
@@ -129,14 +160,16 @@ Base path `/drawer/v1`. Nodes are named by `path=` or `id=`. Mutations name thei
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| GET | `/tree?path=/` | live children of a folder |
+| GET | `/tree?path=/` | live children of a folder; `&depth=N` for everything N levels down |
 | POST | `/folders` | `{"path"}`, creates parents too |
 | DELETE | `/folders?path=` or `?id=` | trash a folder (`&if_head_revision=N` optional) |
-| GET | `/files?path=` or `?id=` | raw bytes; `&revision=N`; `&download=true` for an attachment. Response carries `x-drawer-revision` and `x-drawer-prop-*` |
+| GET | `/files?path=` or `?id=` | raw bytes; `&revision=N`; `&download=true` for an attachment. Response carries `x-drawer-revision`, `x-drawer-prop-*` and an `ETag`; `If-None-Match` gets a 304 |
 | PUT | `/files?path=` | raw body; `x-drawer-comment`, `x-drawer-prop-<key>`, `&if_head_revision=N` |
 | DELETE | `/files?path=` or `?id=` | trash a file (`&if_head_revision=N` optional) |
 | GET | `/files/meta?path=` or `?id=` | id, head revision, size, mime, starred, trashed, properties |
+| POST | `/edit` | `{"path","old_string","new_string","replace_all","author","comment","if_head_revision"}`: exact-text replace as one revision |
 | GET | `/revisions?path=` or `?id=` | revision history, newest first |
+| GET | `/diff?path=` or `?id=` | unified diff; `&from=N&to=M` (default: head vs the one before), `&context=N` |
 | POST | `/rollback` | `{"path"\|"id","revision","author","comment","if_head_revision"}` |
 | POST | `/copy` | `{"from"\|"from_id","to","source_revision","author","comment","if_head_revision"}` |
 | POST | `/move` | `{"from"\|"from_id","to"}`: rename or move, keeps the id |
@@ -146,7 +179,8 @@ Base path `/drawer/v1`. Nodes are named by `path=` or `id=`. Mutations name thei
 | GET | `/starred` | starred live nodes |
 | GET / PUT | `/nodes/{id}/permissions` | list grants; `PUT {"principal","role"}` (owner only) |
 | DELETE | `/nodes/{id}/permissions/{principal}` | remove a grant (owner only) |
-| GET | `/search?q=` | names and contents |
+| GET | `/search?q=` | names first, then contents with `line` and `snippet` |
+| GET | `/recent?limit=` | live files, most recently changed first, with `modified_by` |
 
 Files are served with `nosniff`, and everything except PDFs gets a `sandbox` CSP, so stored HTML or SVG never runs scripts. Write responses include `new_revision`: `false` means content and properties matched the head, so nothing was added.
 
@@ -167,7 +201,9 @@ The REST API, MCP server, CLI and UI all call the same service layer, so they ag
 
 **Limits.** Real user accounts don't exist yet. Actors are self-declared, so grants are cooperative, not a security boundary. Read grants aren't enforced yet. Copying folders isn't supported yet. There are no signed URLs, no blob garbage collection and no Postgres backend. Treat the optional bearer token as the access control.
 
-**Upgrading.** Stores created on the earlier path-keyed schema are migrated in place on open. Their trashed files land in the trash. Write responses changed: `created` is now `new_revision`, and `version` is now `revision`.
+**Upgrading.** Stores created on the earlier path-keyed schema are migrated in place on open. Their trashed files land in the trash. Write responses changed: `created` is now `new_revision`, and `version` is now `revision`. MCP calls without an `author` used to be recorded as `agent`; they now carry the client's name, so a sharing grant written for `agent` needs the client's name instead (or start `drawer stdio` with `--author agent`). MCP tool results are compact JSON, and the listing tools return lean entries; `drawer_stat` still returns the full node.
+
+**Performance.** Listings, search, starred and trash resolve every path in one recursive query rather than one query per ancestor. SQLite runs in WAL mode with `synchronous=NORMAL` and a busy timeout, so a CLI command and a server can share a store without `database is locked` errors.
 
 ## Configuration
 
