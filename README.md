@@ -25,6 +25,8 @@ drawer serve                                # http://127.0.0.1:8787
 
 The installer downloads the release for your machine, checks its SHA-256, and puts `drawer` in `~/.local/bin` with the UI in `~/.local/share/drawer/ui`. If no release exists for your platform it builds from source with cargo (installing Rust via rustup if needed).
 
+To update an install, run `drawer update`. It fetches the latest release for your machine, checks its SHA-256 against `SHA256SUMS`, and replaces the binary and the UI in place. `drawer update --check` only reports whether a newer release exists. Restart `drawer serve` afterwards to run the new version. The store is never touched.
+
 Then point an agent at it. `drawer mcp-config --format <harness>` prints the exact config for Hermes, Claude Code, Codex, Gemini CLI, VS Code, opencode, or any client that takes an `mcpServers` JSON block. See [MCP and agent harnesses](#mcp-and-agent-harnesses).
 
 ## Features
@@ -86,7 +88,7 @@ drawer purge <id> --yes                   # gone for good
 
 | Group | Commands |
 | --- | --- |
-| Run | `serve` (default), `stdio`, `doctor`, `mcp-config`, `completions <shell>` |
+| Run | `serve` (default), `stdio`, `update [--check]`, `doctor`, `mcp-config`, `completions <shell>` |
 | Files | `ls`, `tree`, `mkdir`, `put`, `edit`, `cat`, `get`, `stat`, `mv`, `cp` |
 | Versions | `history`, `diff`, `rollback`, `recent` (`cp` takes `--revision`, `cat` and `get` too) |
 | Trash | `rm`, `trash`, `restore <id>`, `purge <id> --yes` |

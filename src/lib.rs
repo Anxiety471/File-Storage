@@ -5,6 +5,7 @@ pub mod cli;
 pub mod error;
 pub mod mcp;
 pub mod service;
+pub mod update;
 
 use std::{path::PathBuf, sync::Arc};
 
