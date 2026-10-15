@@ -9,6 +9,8 @@ export interface Node {
   hash: string | null;
   size: number | null;
   mime: string | null;
+  /** Author of the head revision: who last changed the content. */
+  modified_by: string | null;
   properties: Record<string, string>;
   trashed: boolean;
   starred: boolean;
@@ -39,15 +41,50 @@ export interface SearchHit {
   path: string;
   matched: "name" | "content";
   snippet: string;
+  line?: number;
+}
+
+export interface Diff {
+  path: string;
+  from: number;
+  to: number;
+  added: number;
+  removed: number;
+  diff: string;
 }
 
 const BASE = "/drawer/v1";
 
+const TOKEN_KEY = "drawer_token";
+
+function storedToken(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** Remember the bearer token for a server that runs with DRAWER_TOKEN. Empty forgets it. */
+export function setToken(token: string) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // storage blocked: the token lasts until reload
+  }
+  memoryToken = token || null;
+}
+let memoryToken: string | null = null;
+
 // Optional bearer token, kept in localStorage when the server runs with DRAWER_TOKEN.
 function headers(extra: Record<string, string> = {}): Record<string, string> {
-  const token = localStorage.getItem("drawer_token");
+  const token = memoryToken ?? storedToken();
   return token ? { ...extra, Authorization: `Bearer ${token}` } : extra;
 }
+
+/** Fired on a 401 so the app can ask for the token. */
+export const UNAUTHORIZED_EVENT = "drawer:unauthorized";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -56,6 +93,10 @@ export class ApiError extends Error {
 }
 
 async function check(r: Response): Promise<Response> {
+  if (r.status === 401) {
+    window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+    throw new ApiError(401, "This Drawer needs an access token");
+  }
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
     throw new ApiError(r.status, body.error ?? `${r.status} ${r.statusText}`);
@@ -151,6 +192,26 @@ export const api = {
   async starred(): Promise<Node[]> {
     const r = await check(await fetch(`${BASE}/starred`, { headers: headers() }));
     return (await r.json()).nodes;
+  },
+  async recent(limit = 50): Promise<Node[]> {
+    const r = await check(await fetch(`${BASE}/recent?limit=${limit}`, { headers: headers() }));
+    return (await r.json()).nodes;
+  },
+  async diff(path: string, from?: number, to?: number): Promise<Diff> {
+    const extra = (from !== undefined ? `&from=${from}` : "") + (to !== undefined ? `&to=${to}` : "");
+    const r = await check(await fetch(`${BASE}/diff?${q(path, extra)}`, { headers: headers() }));
+    return r.json();
+  },
+  // Rename or move by path, keeping the id and history. Missing folders are created.
+  async move(id: string, to: string): Promise<Node> {
+    const r = await check(
+      await fetch(`${BASE}/move`, { ...json("POST", { from_id: id, to }), headers: headers({ "content-type": "application/json", "x-drawer-author": "ui" }) }),
+    );
+    return r.json();
+  },
+  async copy(id: string, to: string): Promise<WriteOutcome> {
+    const r = await check(await fetch(`${BASE}/copy`, json("POST", { from_id: id, to, author: "ui", if_head_revision: 0 })));
+    return r.json();
   },
   async trashed(): Promise<Node[]> {
     const r = await check(await fetch(`${BASE}/trash`, { headers: headers() }));

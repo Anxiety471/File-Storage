@@ -315,3 +315,37 @@ function Notice({ title, body }: { title: string; body: string }) {
 export function Loading() {
   return <div className="notice muted">Loading preview…</div>;
 }
+
+/** A unified diff with added and removed lines coloured, and old/new line numbers. */
+export function DiffView({ diff }: { diff: string }) {
+  const rows = useMemo(() => {
+    const out: { kind: "add" | "del" | "ctx" | "hunk"; text: string; a?: number; b?: number }[] = [];
+    let a = 0;
+    let b = 0;
+    for (const line of diff.split("\n")) {
+      if (line.startsWith("---") || line.startsWith("+++") || line === "") continue;
+      const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+      if (hunk) {
+        a = Number(hunk[1]);
+        b = Number(hunk[2]);
+        out.push({ kind: "hunk", text: line });
+      } else if (line.startsWith("+")) out.push({ kind: "add", text: line.slice(1), b: b++ });
+      else if (line.startsWith("-")) out.push({ kind: "del", text: line.slice(1), a: a++ });
+      else if (!line.startsWith("\\")) out.push({ kind: "ctx", text: line.slice(1), a: a++, b: b++ });
+    }
+    return out;
+  }, [diff]);
+  if (!diff) return <div className="notice">These revisions have the same content.</div>;
+  return (
+    <div className="diff" role="table" aria-label="Changes">
+      {rows.map((r, i) => (
+        <div key={i} className={`diff-row ${r.kind}`} role="row">
+          <span className="diff-num" aria-hidden="true">{r.a ?? ""}</span>
+          <span className="diff-num" aria-hidden="true">{r.b ?? ""}</span>
+          <span className="diff-sign" aria-hidden="true">{r.kind === "add" ? "+" : r.kind === "del" ? "−" : ""}</span>
+          <span className="diff-text">{r.text}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
