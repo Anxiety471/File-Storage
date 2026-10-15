@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::error::{Error, Result};
-use crate::service::{Drawer, NodeUpdate, Properties, Ref, WriteOpts, normalize};
+use crate::service::{Drawer, Edit, NodeUpdate, Properties, Ref, WriteOpts, normalize};
 
 /// Custom properties travel as `x-drawer-prop-<key>` headers, like GCS's `x-goog-meta-*`.
 const PROP_PREFIX: &str = "x-drawer-prop-";
@@ -32,6 +32,39 @@ struct PathQ {
 #[derive(Deserialize)]
 struct PathBody {
     path: String,
+}
+
+#[derive(Deserialize)]
+struct TreeQ {
+    path: Option<String>,
+    /// Levels to list; 1 (default) is direct children.
+    depth: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct LimitQ {
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct DiffQ {
+    path: Option<String>,
+    id: Option<String>,
+    from: Option<i64>,
+    to: Option<i64>,
+    context: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct EditBody {
+    path: String,
+    old_string: String,
+    new_string: String,
+    #[serde(default)]
+    replace_all: bool,
+    author: Option<String>,
+    comment: Option<String>,
+    if_head_revision: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -91,6 +124,9 @@ pub fn router() -> Router<Drawer> {
     Router::new()
         .route("/health", get(health))
         .route("/tree", get(tree))
+        .route("/recent", get(recent))
+        .route("/diff", get(diff))
+        .route("/edit", post(edit))
         .route("/folders", post(mkdir).delete(delete_file))
         .route("/files", get(read_file).put(write_file).delete(delete_file))
         .route("/files/meta", get(meta))
@@ -159,18 +195,49 @@ fn write_opts(h: &HeaderMap, if_head_revision: Option<i64>) -> Result<WriteOpts>
     })
 }
 
-async fn tree(State(s): State<Drawer>, Query(q): Query<PathQ>) -> Result<Json<Value>> {
+async fn tree(State(s): State<Drawer>, Query(q): Query<TreeQ>) -> Result<Json<Value>> {
     let path = q.path.as_deref().unwrap_or("/");
-    Ok(Json(json!({ "path": normalize(path)?, "entries": s.list(path).await? })))
+    match q.depth.unwrap_or(1).clamp(1, 32) {
+        1 => Ok(Json(json!({ "path": normalize(path)?, "entries": s.list(path).await? }))),
+        depth => {
+            let (entries, truncated) = s.walk(path, depth).await?;
+            Ok(Json(json!({ "path": normalize(path)?, "entries": entries, "truncated": truncated })))
+        }
+    }
+}
+
+async fn recent(State(s): State<Drawer>, Query(q): Query<LimitQ>) -> Result<Json<Value>> {
+    Ok(Json(json!({ "nodes": s.recent(q.limit.unwrap_or(50)).await? })))
+}
+
+async fn diff(State(s): State<Drawer>, Query(q): Query<DiffQ>) -> Result<Json<Value>> {
+    Ok(out(s.diff(pick(&q.id, &q.path)?, q.from, q.to, q.context.unwrap_or(3).min(1000)).await?))
+}
+
+/// Replace `old_string` with `new_string` in a text file, as one guarded revision.
+async fn edit(State(s): State<Drawer>, headers: HeaderMap, Json(b): Json<EditBody>) -> Result<Json<Value>> {
+    let mut opts = WriteOpts::new(b.author.unwrap_or_else(|| actor(&headers)), b.comment.unwrap_or_default());
+    opts.if_head_revision = b.if_head_revision;
+    let e = Edit { old: b.old_string, new: b.new_string, replace_all: b.replace_all };
+    Ok(out(s.edit(&b.path, &[e], opts).await?))
 }
 
 async fn mkdir(State(s): State<Drawer>, headers: HeaderMap, Json(b): Json<PathBody>) -> Result<Json<Value>> {
     Ok(out(s.mkdir(&b.path, &actor(&headers)).await?))
 }
 
-async fn read_file(State(s): State<Drawer>, Query(q): Query<PathQ>) -> Result<Response> {
+async fn read_file(State(s): State<Drawer>, Query(q): Query<PathQ>, req: HeaderMap) -> Result<Response> {
     let name = s.stat(target(&q)?).await?.name;
     let (rev, data) = s.read(target(&q)?, q.revision).await?;
+    // Content is addressed by hash, so the hash is a perfect validator: a client that already
+    // has these bytes gets a 304 and no body.
+    let etag = format!("\"{}\"", rev.hash);
+    if req.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()).is_some_and(|v| v.split(',').any(|t| t.trim() == etag)) {
+        let mut resp = axum::http::StatusCode::NOT_MODIFIED.into_response();
+        resp.headers_mut().insert(header::ETAG, HeaderValue::from_str(&etag).expect("hex is ascii"));
+        resp.headers_mut().insert("x-drawer-revision", HeaderValue::from(rev.revision));
+        return Ok(resp);
+    }
     let mut resp = data.into_response();
     let h = resp.headers_mut();
     if let Ok(v) = HeaderValue::from_str(&rev.mime) {
@@ -186,6 +253,8 @@ async fn read_file(State(s): State<Drawer>, Query(q): Query<PathQ>) -> Result<Re
         h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'"));
     }
     h.insert("x-drawer-revision", HeaderValue::from(rev.revision));
+    h.insert(header::ETAG, HeaderValue::from_str(&etag).expect("hex is ascii"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     h.insert("x-drawer-hash", HeaderValue::from_str(&rev.hash).expect("hex is ascii"));
     for (k, v) in &rev.properties {
         let name = HeaderName::from_bytes(format!("{PROP_PREFIX}{k}").as_bytes());

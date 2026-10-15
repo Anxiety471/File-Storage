@@ -1,7 +1,7 @@
 use drawer::{
     blob::BlobStore,
     error::Error,
-    service::{Drawer, NodeUpdate, Properties, Ref, WriteOpts},
+    service::{Drawer, Edit, NodeUpdate, Properties, Ref, WriteOpts},
 };
 
 async fn store() -> (Drawer, tempfile::TempDir) {
@@ -403,4 +403,113 @@ async fn legacy_store_is_migrated_in_place() {
     drop(m);
     let again = Drawer::open(dir.path()).await.unwrap();
     assert_eq!(again.read(Ref::Path("/docs/a.md"), None).await.unwrap().1, b"new body");
+}
+
+fn edit(old: &str, new: &str) -> Edit {
+    Edit { old: old.into(), new: new.into(), replace_all: false }
+}
+
+#[tokio::test]
+async fn edit_replaces_exact_text_as_one_guarded_revision() {
+    let (m, _d) = store().await;
+    let mut opts = by("alice", "");
+    opts.properties = props(&[("k", "v")]);
+    m.write("/a.md", b"one\ntwo\ntwo\n", opts).await.unwrap();
+
+    let out = m.edit("/a.md", &[edit("one", "uno")], by("bob", "spanish")).await.unwrap();
+    assert_eq!(out.revision, 2);
+    let (rev, data) = m.read(Ref::Path("/a.md"), None).await.unwrap();
+    assert_eq!(data, b"uno\ntwo\ntwo\n");
+    assert_eq!((rev.author.as_str(), rev.comment.as_str()), ("bob", "spanish"));
+    // properties carry over from the edited revision
+    assert_eq!(rev.properties, props(&[("k", "v")]));
+    assert_eq!(out.node.modified_by.as_deref(), Some("bob"));
+
+    // ambiguous and missing text are refused, and nothing is written
+    assert!(matches!(m.edit("/a.md", &[edit("two", "dos")], by("t", "")).await, Err(Error::Invalid(m)) if m.contains("2 times")));
+    assert!(matches!(m.edit("/a.md", &[edit("zzz", "")], by("t", "")).await, Err(Error::Invalid(m)) if m.contains("not found")));
+    let all = Edit { replace_all: true, ..edit("two", "dos") };
+    assert_eq!(m.edit("/a.md", &[all], by("t", "")).await.unwrap().revision, 3);
+    assert_eq!(m.read(Ref::Path("/a.md"), None).await.unwrap().1, b"uno\ndos\ndos\n");
+
+    // a stale precondition fails
+    assert!(matches!(m.edit("/a.md", &[edit("uno", "1")], guarded(1)).await, Err(Error::PreconditionFailed(_))));
+
+    // CRLF files still match edits written with \n
+    m.write("/win.txt", b"a\r\nb\r\n", by("t", "")).await.unwrap();
+    m.edit("/win.txt", &[edit("a\nb", "x\ny")], by("t", "")).await.unwrap();
+    assert_eq!(m.read(Ref::Path("/win.txt"), None).await.unwrap().1, b"x\r\ny\r\n");
+
+    // binary files and folders can't be edited
+    m.write("/b.bin", &[0xff, 0x00], by("t", "")).await.unwrap();
+    assert!(m.edit("/b.bin", &[edit("a", "b")], by("t", "")).await.is_err());
+    m.mkdir("/dir", "t").await.unwrap();
+    assert!(m.edit("/dir", &[edit("a", "b")], by("t", "")).await.is_err());
+}
+
+#[tokio::test]
+async fn diff_between_revisions() {
+    let (m, _d) = store().await;
+    m.write("/d.txt", b"a\nb\nc\n", by("t", "")).await.unwrap();
+    m.write("/d.txt", b"a\nB\nc\nd\n", by("t", "")).await.unwrap();
+
+    let d = m.diff(Ref::Path("/d.txt"), None, None, 3).await.unwrap();
+    assert_eq!((d.from, d.to, d.added, d.removed), (1, 2, 2, 1));
+    assert!(d.diff.contains("-b\n+B\n"), "{}", d.diff);
+    assert!(d.diff.starts_with("--- /d.txt@1\n+++ /d.txt@2\n"), "{}", d.diff);
+
+    // revision 0 is an empty file, so the first revision diffs as all additions
+    let first = m.diff(Ref::Path("/d.txt"), None, Some(1), 3).await.unwrap();
+    assert_eq!((first.from, first.added, first.removed), (0, 3, 0));
+    let same = m.diff(Ref::Path("/d.txt"), Some(2), Some(2), 3).await.unwrap();
+    assert!(same.diff.is_empty());
+    assert!(m.diff(Ref::Path("/d.txt"), Some(9), None, 3).await.is_err());
+}
+
+#[tokio::test]
+async fn walk_recent_and_batch_paths() {
+    let (m, _d) = store().await;
+    for p in ["/b/x.md", "/a/deep/er/y.md", "/a-sibling.md", "/a/z.md"] {
+        m.write(p, p.as_bytes(), by("t", "")).await.unwrap();
+    }
+    let (all, truncated) = m.walk("/", 32).await.unwrap();
+    assert!(!truncated);
+    let paths: Vec<_> = all.iter().map(|n| n.path.as_str()).collect();
+    // a folder's children follow it directly, even when a sibling name sorts in between
+    assert_eq!(paths, ["/a", "/a/deep", "/a/deep/er", "/a/deep/er/y.md", "/a/z.md", "/a-sibling.md", "/b", "/b/x.md"]);
+    let (shallow, _) = m.walk("/a", 1).await.unwrap();
+    assert_eq!(shallow.iter().map(|n| n.path.as_str()).collect::<Vec<_>>(), ["/a/deep", "/a/z.md"]);
+    assert!(m.walk("/a/z.md", 2).await.is_err());
+
+    m.write("/b/x.md", b"newer", by("zed", "")).await.unwrap();
+    let recent = m.recent(2).await.unwrap();
+    assert_eq!(recent[0].path, "/b/x.md");
+    assert_eq!(recent[0].modified_by.as_deref(), Some("zed"));
+    assert_eq!(recent.len(), 2);
+
+    // starred and trash resolve every path in one go
+    for p in ["/a/deep/er/y.md", "/b"] {
+        let id = m.stat(Ref::Path(p)).await.unwrap().id;
+        m.update(&id, NodeUpdate { starred: Some(true), ..NodeUpdate::default() }, "t").await.unwrap();
+    }
+    let starred = m.starred().await.unwrap();
+    assert_eq!(starred.iter().map(|n| n.path.as_str()).collect::<Vec<_>>(), ["/a/deep/er/y.md", "/b"]);
+    m.trash(Ref::Path("/a/deep"), None, "t").await.unwrap();
+    assert_eq!(m.trash_list().await.unwrap()[0].path, "/a/deep");
+}
+
+#[tokio::test]
+async fn search_ranks_names_first_and_reports_lines() {
+    let (m, _d) = store().await;
+    m.write("/a.md", b"intro\nthe budget is due\n", by("t", "")).await.unwrap();
+    m.write("/z/budget.md", b"numbers", by("t", "")).await.unwrap();
+    let long = format!("{}needle{}", "x".repeat(400), "y".repeat(400));
+    m.write("/long.txt", long.as_bytes(), by("t", "")).await.unwrap();
+
+    let hits = m.search("budget", 10).await.unwrap();
+    assert_eq!((hits[0].path.as_str(), hits[0].matched), ("/z/budget.md", "name"));
+    assert_eq!((hits[1].path.as_str(), hits[1].line), ("/a.md", Some(2)));
+    // long lines are cut around the match
+    let hit = &m.search("needle", 10).await.unwrap()[0];
+    assert!(hit.snippet.contains("needle") && hit.snippet.chars().count() < 200, "{}", hit.snippet);
 }

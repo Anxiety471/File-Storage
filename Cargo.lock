@@ -278,6 +278,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap_complete"
+version = "4.6.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "037e2a1a92236d0aff7e845093f64661d6df4c02c9fcc61a60e9e1d736fa392f"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "clap_derive"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -477,6 +486,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "clap",
+ "clap_complete",
  "hex",
  "http-body-util",
  "rmcp",
@@ -484,6 +494,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "similar",
  "sqlx",
  "tempfile",
  "thiserror",
@@ -1573,6 +1584,12 @@ dependencies = [
  "errno",
  "libc",
 ]
+
+[[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "slab"

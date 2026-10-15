@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use serde::Serialize;
@@ -18,6 +19,10 @@ use crate::blob::BlobStore;
 use crate::error::{Error, Result};
 
 const MAX_CONTENT_SCAN: i64 = 1024 * 1024;
+/// Longest search snippet, in characters. Long lines are cut around the match.
+const SNIPPET_CHARS: usize = 160;
+/// Most nodes `walk` returns, so a recursive listing of a huge tree stays bounded.
+pub const MAX_WALK: usize = 5000;
 const MAX_PROPERTY_ENTRIES: usize = 32;
 const MAX_PROPERTY_KEY: usize = 64;
 const MAX_PROPERTY_VALUE: usize = 1024;
@@ -58,6 +63,8 @@ pub struct Node {
     pub hash: Option<String>,
     pub size: Option<i64>,
     pub mime: Option<String>,
+    /// Author of the head revision: who last changed the content. `None` for folders.
+    pub modified_by: Option<String>,
     pub properties: Properties,
     pub trashed: bool,
     pub starred: bool,
@@ -98,6 +105,29 @@ pub struct SearchHit {
     pub path: String,
     pub matched: &'static str,
     pub snippet: String,
+    /// 1-based line of the snippet, for content matches.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
+}
+
+/// A text edit: replace `old` with `new`, once (it must be unique) or everywhere.
+#[derive(Debug, Clone)]
+pub struct Edit {
+    pub old: String,
+    pub new: String,
+    pub replace_all: bool,
+}
+
+/// What `Drawer::diff` compared, and the unified diff between the two revisions.
+#[derive(Debug, Clone, Serialize)]
+pub struct Diff {
+    pub path: String,
+    pub from: i64,
+    pub to: i64,
+    pub added: usize,
+    pub removed: usize,
+    /// Unified diff text; empty when the contents are the same.
+    pub diff: String,
 }
 
 /// Who is changing a file, why, with what properties, and under which precondition.
@@ -204,6 +234,27 @@ fn is_text(mime: &str) -> bool {
     mime.starts_with("text/") || matches!(mime, "application/json" | "application/xml" | "application/yaml" | "application/toml")
 }
 
+/// A line trimmed to at most `SNIPPET_CHARS` characters, keeping the match in view.
+fn snippet(line: &str, lowered_query: &str) -> String {
+    let line = line.trim();
+    let chars: Vec<char> = line.chars().collect();
+    if chars.len() <= SNIPPET_CHARS {
+        return line.to_string();
+    }
+    // Lowercasing can change lengths for a few scripts; the estimate only places the window.
+    let at = line.to_lowercase().find(lowered_query).map_or(0, |b| line.to_lowercase()[..b].chars().count());
+    let start = at.saturating_sub(SNIPPET_CHARS / 3).min(chars.len() - SNIPPET_CHARS);
+    let end = start + SNIPPET_CHARS;
+    let mut out: String = chars[start..end].iter().collect();
+    if start > 0 {
+        out.insert(0, '…');
+    }
+    if end < chars.len() {
+        out.push('…');
+    }
+    out
+}
+
 /// Media type from the file extension, falling back to a UTF-8 check for unknown extensions.
 fn guess_mime(path: &str, data: &[u8]) -> String {
     let name = name_of(path).to_ascii_lowercase();
@@ -263,6 +314,26 @@ fn guess_mime(path: &str, data: &[u8]) -> String {
     mime.into()
 }
 
+/// One edit applied to `text`, or why it can't be. Agents usually send `\n` line endings, so
+/// a file with `\r\n` endings is matched with those too.
+fn apply_edit(text: &str, e: &Edit) -> std::result::Result<String, String> {
+    if e.old.is_empty() {
+        return Err("old text is empty".into());
+    }
+    let crlf = |s: &str| s.replace("\r\n", "\n").replace('\n', "\r\n");
+    let (old, new) = if !text.contains(&e.old) && text.contains("\r\n") && e.old.contains('\n') {
+        (crlf(&e.old), crlf(&e.new))
+    } else {
+        (e.old.clone(), e.new.clone())
+    };
+    match text.matches(&old).count() {
+        0 => Err("old text not found; re-read the file and copy it exactly, including whitespace".into()),
+        1 => Ok(text.replacen(&old, &new, 1)),
+        _ if e.replace_all => Ok(text.replace(&old, &new)),
+        n => Err(format!("old text appears {n} times; include more surrounding text to make it unique, or set replace_all")),
+    }
+}
+
 fn now() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -277,7 +348,7 @@ fn rank(role: &str) -> u8 {
 }
 
 const NODE_SELECT: &str = "SELECT n.id, n.parent_id, n.name, n.kind, n.owner, n.head_revision, n.trashed, \
-    n.starred, n.created_at, n.modified_at, r.hash, r.size, r.mime, r.properties \
+    n.starred, n.created_at, n.modified_at, r.hash, r.size, r.mime, r.author, r.properties \
     FROM nodes n LEFT JOIN revisions r ON r.node_id = n.id AND r.revision = n.head_revision";
 
 const REVISION_SELECT: &str =
@@ -296,6 +367,7 @@ fn node_from_row(r: &SqliteRow, path: String) -> Node {
         hash: r.get("hash"),
         size: r.get("size"),
         mime: r.get("mime"),
+        modified_by: r.get("author"),
         properties: props.and_then(|p| serde_json::from_str(&p).ok()).unwrap_or_default(),
         trashed: r.get::<i64, _>("trashed") != 0,
         starred: r.get::<i64, _>("starred") != 0,
@@ -454,7 +526,13 @@ impl Drawer {
             .filename(data_dir.join("drawer.db"))
             .create_if_missing(true)
             .foreign_keys(true)
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            // WAL makes NORMAL durable against crashes of this process; only an OS crash can
+            // lose the last transactions. Waiting on a lock beats failing with SQLITE_BUSY when
+            // the CLI or a second server touches the same store.
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+            .busy_timeout(Duration::from_secs(10))
+            .pragma("temp_store", "memory");
         // Schema and migrations run on a single connection that is closed before the shared
         // pool opens, so no pooled connection ever holds a plan from the old schema.
         let setup = SqlitePoolOptions::new().max_connections(1).connect_with(opts.clone()).await?;
@@ -483,24 +561,49 @@ impl Drawer {
     }
 
     async fn path_of(&self, id: &str) -> Result<String> {
-        let mut names = Vec::new();
-        let mut cur = id.to_string();
-        loop {
-            let r = sqlx::query("SELECT parent_id, name FROM nodes WHERE id = ?")
-                .bind(&cur)
-                .fetch_optional(&self.pool)
-                .await?
-                .ok_or_else(|| Error::NotFound(format!("node {cur}")))?;
-            match r.get::<Option<String>, _>("parent_id") {
-                None => break,
-                Some(p) => {
-                    names.push(r.get::<String, _>("name"));
-                    cur = p;
-                }
-            }
+        self.paths_of(&[id.to_string()])
+            .await?
+            .remove(id)
+            .ok_or_else(|| Error::NotFound(format!("node {id}")))
+    }
+
+    /// Paths of many nodes in one query, by walking each up to the root.
+    async fn paths_of(&self, ids: &[String]) -> Result<HashMap<String, String>> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
         }
-        names.reverse();
-        Ok(format!("/{}", names.join("/")))
+        let rows = sqlx::query(
+            "WITH RECURSIVE up(start, cur, path) AS (\
+               SELECT n.id, n.parent_id, n.name FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?)) \
+               UNION ALL \
+               SELECT up.start, n.parent_id, n.name || '/' || up.path FROM up JOIN nodes n ON n.id = up.cur \
+               WHERE n.parent_id IS NOT NULL) \
+             SELECT start, path FROM up WHERE cur IS NULL OR cur = ?",
+        )
+        .bind(serde_json::to_string(ids).expect("strings serialize"))
+        .bind(ROOT_ID)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let start: String = r.get("start");
+                // The root's own row has an empty name and no parent.
+                let path = if start == ROOT_ID { "/".to_string() } else { format!("/{}", r.get::<String, _>("path")) };
+                (start, path)
+            })
+            .collect())
+    }
+
+    /// Nodes from rows of `NODE_SELECT`, with their paths filled in by one query.
+    async fn nodes_with_paths(&self, rows: &[SqliteRow]) -> Result<Vec<Node>> {
+        let ids: Vec<String> = rows.iter().map(|r| r.get("id")).collect();
+        let mut paths = self.paths_of(&ids).await?;
+        Ok(rows
+            .iter()
+            .zip(ids)
+            .map(|(r, id)| node_from_row(r, paths.remove(&id).unwrap_or_default()))
+            .collect())
     }
 
     /// A node by id, trashed or not.
@@ -722,24 +825,62 @@ impl Drawer {
         )))
         .fetch_all(&self.pool)
         .await?;
-        let mut out = Vec::new();
-        for r in rows {
-            let id: String = r.get("id");
-            out.push(node_from_row(&r, self.path_of(&id).await?));
-        }
-        Ok(out)
+        self.nodes_with_paths(&rows).await
     }
 
     pub async fn starred(&self) -> Result<Vec<Node>> {
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!("{NODE_SELECT} WHERE n.starred = 1 AND n.trashed = 0 ORDER BY n.name")))
             .fetch_all(&self.pool)
             .await?;
-        let mut out = Vec::new();
-        for r in rows {
-            let id: String = r.get("id");
-            out.push(node_from_row(&r, self.path_of(&id).await?));
-        }
-        Ok(out)
+        let mut nodes = self.nodes_with_paths(&rows).await?;
+        nodes.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(nodes)
+    }
+
+    /// Live files, most recently changed first: what agents and people have been working on.
+    pub async fn recent(&self, limit: usize) -> Result<Vec<Node>> {
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "{NODE_SELECT} WHERE n.kind = 'file' AND n.trashed = 0 ORDER BY n.modified_at DESC, n.name LIMIT ?"
+        )))
+        .bind(limit.clamp(1, 1000) as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        self.nodes_with_paths(&rows).await
+    }
+
+    /// Everything under a folder, depth first in path order, down to `max_depth` levels
+    /// (1 is the folder's own children). Returns at most `MAX_WALK` nodes, and whether the
+    /// listing was cut short.
+    pub async fn walk(&self, path: &str, max_depth: usize) -> Result<(Vec<Node>, bool)> {
+        let folder = self
+            .lookup(path)
+            .await?
+            .filter(|n| n.kind == "folder")
+            .ok_or_else(|| Error::NotFound(format!("folder {path}")))?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            // `sort` joins names with char(1), which sorts below every allowed name character,
+            // so a folder's children come right after it.
+            "WITH RECURSIVE sub(id, depth, rel, sort) AS (\
+               SELECT id, 1, name, name FROM nodes WHERE parent_id = ? AND trashed = 0 \
+               UNION ALL \
+               SELECT n.id, sub.depth + 1, sub.rel || '/' || n.name, sub.sort || char(1) || n.name \
+               FROM nodes n JOIN sub ON n.parent_id = sub.id WHERE n.trashed = 0 AND sub.depth < ?) \
+             {} JOIN sub ON sub.id = n.id ORDER BY sub.sort LIMIT ?",
+            NODE_SELECT.replacen(" FROM nodes n", ", sub.rel FROM nodes n", 1)
+        )))
+        .bind(&folder.id)
+        .bind(max_depth.max(1) as i64)
+        .bind(MAX_WALK as i64 + 1)
+        .fetch_all(&self.pool)
+        .await?;
+        let truncated = rows.len() > MAX_WALK;
+        let base = if folder.path == "/" { String::new() } else { folder.path.clone() };
+        let nodes = rows
+            .iter()
+            .take(MAX_WALK)
+            .map(|r| node_from_row(r, format!("{base}/{}", r.get::<String, _>("rel"))))
+            .collect();
+        Ok((nodes, truncated))
     }
 
     pub async fn permissions(&self, id: &str) -> Result<Vec<Permission>> {
@@ -754,31 +895,30 @@ impl Drawer {
     }
 
     /// Case-insensitive search over live file paths and the text of their head revisions.
+    /// Name matches come first, then content matches, each in path order.
     pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
         let q = query.trim().to_lowercase();
         if q.is_empty() {
             return Err(Error::Invalid("empty query".into()));
         }
+        let limit = limit.clamp(1, 500);
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "{NODE_SELECT} WHERE n.kind = 'file' AND n.trashed = 0 AND n.head_revision IS NOT NULL"
         )))
         .fetch_all(&self.pool)
         .await?;
-        let mut files = Vec::new();
-        for r in &rows {
-            let id: String = r.get("id");
-            files.push(node_from_row(r, self.path_of(&id).await?));
-        }
+        let mut files = self.nodes_with_paths(&rows).await?;
         files.sort_by(|a, b| a.path.cmp(&b.path));
 
-        let mut hits = Vec::new();
-        for f in files {
+        let (named, rest): (Vec<Node>, Vec<Node>) = files.into_iter().partition(|f| f.path.to_lowercase().contains(&q));
+        let mut hits: Vec<SearchHit> = named
+            .into_iter()
+            .take(limit)
+            .map(|f| SearchHit { id: f.id, path: f.path, matched: "name", snippet: String::new(), line: None })
+            .collect();
+        for f in rest {
             if hits.len() >= limit {
                 break;
-            }
-            if f.path.to_lowercase().contains(&q) {
-                hits.push(SearchHit { id: f.id, path: f.path, matched: "name", snippet: String::new() });
-                continue;
             }
             let (Some(size), Some(mime), Some(hash)) = (f.size, f.mime.as_deref(), f.hash.as_deref()) else {
                 continue;
@@ -788,12 +928,17 @@ impl Drawer {
             }
             let data = self.blobs.get(hash).await?;
             let Ok(text) = std::str::from_utf8(&data) else { continue };
-            if let Some(line) = text.lines().find(|l| l.to_lowercase().contains(&q)) {
+            // Cheap whole-file check first; most files don't match.
+            if !text.to_lowercase().contains(&q) {
+                continue;
+            }
+            if let Some((i, line)) = text.lines().enumerate().find(|(_, l)| l.to_lowercase().contains(&q)) {
                 hits.push(SearchHit {
                     id: f.id,
                     path: f.path,
                     matched: "content",
-                    snippet: line.chars().take(200).collect(),
+                    snippet: snippet(line, &q),
+                    line: Some(i + 1),
                 });
             }
         }
@@ -934,6 +1079,73 @@ impl Drawer {
         tx.commit().await?;
         let node = self.node(&node_id, Some(norm.to_string())).await?;
         Ok(WriteOutcome { node, revision: next, new_revision: true })
+    }
+
+    /// Change part of a text file: each edit replaces `old` with `new`, in order. The result is
+    /// written as one new revision, guarded on the head revision that was edited, so a write
+    /// that lands in between makes this fail instead of being overwritten. Properties carry over
+    /// from the head unless `opts` sets some.
+    pub async fn edit(&self, path: &str, edits: &[Edit], mut opts: WriteOpts) -> Result<WriteOutcome> {
+        if edits.is_empty() {
+            return Err(Error::Invalid("no edits given".into()));
+        }
+        let node = self.resolve(Ref::Path(path)).await?;
+        let head = node.head_revision.ok_or_else(|| Error::Invalid(format!("{} is a folder", node.path)))?;
+        check_precondition(&node.path, Some(head), opts.if_head_revision)?;
+        let (rev, data) = self.read(Ref::Id(&node.id), Some(head)).await?;
+        let mut text = String::from_utf8(data)
+            .map_err(|_| Error::Invalid(format!("{} is binary ({}); only text files can be edited", node.path, rev.mime)))?;
+        for (i, e) in edits.iter().enumerate() {
+            text = apply_edit(&text, e).map_err(|msg| {
+                let which = if edits.len() > 1 { format!("edit {}: ", i + 1) } else { String::new() };
+                Error::Invalid(format!("{which}{msg} in {} (revision {head})", node.path))
+            })?;
+        }
+        if opts.properties.is_empty() {
+            opts.properties = rev.properties;
+        }
+        opts.if_head_revision = Some(head);
+        self.write(&node.path, text.as_bytes(), opts).await
+    }
+
+    /// Unified diff between two revisions of a text file. `to` defaults to the head and
+    /// `from` to the revision before `to`; revision 0 stands for an empty file.
+    pub async fn diff(&self, r: Ref<'_>, from: Option<i64>, to: Option<i64>, context: usize) -> Result<Diff> {
+        let node = self.resolve(r).await?;
+        let head = node.head_revision.ok_or_else(|| Error::Invalid(format!("{} is a folder", node.path)))?;
+        let to = to.unwrap_or(head);
+        let from = from.unwrap_or(to - 1).max(0);
+        let text_of = |rev: i64| {
+            let node = &node;
+            async move {
+                if rev == 0 {
+                    return Ok(String::new());
+                }
+                let (meta, data) = self.read(Ref::Id(&node.id), Some(rev)).await?;
+                String::from_utf8(data).map_err(|_| {
+                    Error::Invalid(format!("{} revision {rev} is binary ({}); only text can be diffed", node.path, meta.mime))
+                })
+            }
+        };
+        let (old, new) = (text_of(from).await?, text_of(to).await?);
+        let td = similar::TextDiff::from_lines(&old, &new);
+        let (mut added, mut removed) = (0, 0);
+        for change in td.iter_all_changes() {
+            match change.tag() {
+                similar::ChangeTag::Insert => added += 1,
+                similar::ChangeTag::Delete => removed += 1,
+                similar::ChangeTag::Equal => {}
+            }
+        }
+        let diff = if added + removed == 0 {
+            String::new()
+        } else {
+            td.unified_diff()
+                .context_radius(context)
+                .header(&format!("{}@{from}", node.path), &format!("{}@{to}", node.path))
+                .to_string()
+        };
+        Ok(Diff { path: node.path, from, to, added, removed, diff })
     }
 
     /// Copy one revision of a file to `to`, which may be the file's own path (a new revision

@@ -331,6 +331,70 @@ async fn mcp_tools_over_http() -> anyhow::Result<()> {
     let r = call("drawer_read", json!({"path": "/missing"})).await?;
     assert_eq!(r.is_error, Some(true));
 
+    // edit, diff and recent; changes are attributed to the client's handshake name
+    call("drawer_write", json!({"path": "/notes/n.md", "content": "one\ntwo\n"})).await?;
+    let r = call("drawer_edit", json!({"path": "/notes/n.md", "old_string": "two", "new_string": "2"})).await?;
+    assert_ne!(r.is_error, Some(true), "{r:?}");
+    assert_eq!(text_of(&r)["revision"], 2);
+    let r = call("drawer_edit", json!({"path": "/notes/n.md", "old_string": "missing", "new_string": "x"})).await?;
+    assert_eq!(r.is_error, Some(true));
+    let r = call("drawer_diff", json!({"path": "/notes/n.md"})).await?;
+    assert!(text(r).contains("+2"));
+    let recent = text_of(&call("drawer_recent", json!({"limit": 1})).await?);
+    assert_eq!(recent[0]["path"], "/notes/n.md");
+    let by = recent[0]["modified_by"].as_str().unwrap().to_string();
+    assert!(!by.is_empty() && by != "agent", "client name should be the author, got {by}");
+    let r = call("drawer_write", json!({"path": "/notes/m.md", "content": "x", "author": "named"})).await?;
+    assert_ne!(r.is_error, Some(true));
+    assert_eq!(text_of(&call("drawer_recent", json!({"limit": 1})).await?)[0]["modified_by"], "named");
+
+    // reads report the revision, and page through long files
+    let r = call("drawer_read", json!({"path": "/notes/n.md"})).await?;
+    let content = serde_json::to_value(&r.content)?;
+    assert_eq!(content[0]["text"], "one\n2\n");
+    assert!(content[1]["text"].as_str().unwrap().contains("revision 2"));
+    let long: String = (1..=3000).map(|i| format!("line {i}\n")).collect();
+    call("drawer_write", json!({"path": "/notes/long.txt", "content": long})).await?;
+    let content = serde_json::to_value(&call("drawer_read", json!({"path": "/notes/long.txt"})).await?.content)?;
+    assert!(content[0]["text"].as_str().unwrap().ends_with("line 2000\n"));
+    assert!(content[1]["text"].as_str().unwrap().contains("offset=2001"));
+    let content = serde_json::to_value(&call("drawer_read", json!({"path": "/notes/long.txt", "offset": 2999, "limit": 5})).await?.content)?;
+    assert_eq!(content[0]["text"], "line 2999\nline 3000\n");
+
+    // a whole tree in one call
+    let tree = text_of(&call("drawer_list", json!({"depth": 5})).await?);
+    let paths: Vec<_> = tree.as_array().unwrap().iter().map(|e| e["path"].as_str().unwrap().to_string()).collect();
+    assert!(paths.contains(&"/mem/archive/a.md".to_string()), "{paths:?}");
+    let top = text_of(&call("drawer_list", json!({})).await?);
+    assert!(top.as_array().unwrap().iter().all(|e| e["path"].as_str().unwrap().matches('/').count() == 1));
+
     client.cancel().await.ok();
     Ok(())
+}
+
+#[tokio::test]
+async fn etags_recent_diff_and_edit_over_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = drawer::app(Drawer::open(dir.path()).await.unwrap(), None, None);
+    let put = Request::put("/drawer/v1/files?path=/e.txt").body(Body::from("a\nb\n")).unwrap();
+    send(&app, put).await;
+
+    let r = send(&app, get("/drawer/v1/files?path=/e.txt")).await;
+    let etag = r.headers()["etag"].to_str().unwrap().to_string();
+    let cached = Request::get("/drawer/v1/files?path=/e.txt").header("if-none-match", &etag).body(Body::empty()).unwrap();
+    assert_eq!(send(&app, cached).await.status(), StatusCode::NOT_MODIFIED);
+
+    let r = send(&app, json_post("/drawer/v1/edit", json!({"path": "/e.txt", "old_string": "b", "new_string": "c"}))).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(json_of(r).await["revision"], 2);
+    let stale = Request::get("/drawer/v1/files?path=/e.txt").header("if-none-match", &etag).body(Body::empty()).unwrap();
+    assert_eq!(send(&app, stale).await.status(), StatusCode::OK);
+
+    let d = json_of(send(&app, get("/drawer/v1/diff?path=/e.txt")).await).await;
+    assert_eq!((d["added"].as_i64(), d["removed"].as_i64()), (Some(1), Some(1)));
+    let recent = json_of(send(&app, get("/drawer/v1/recent")).await).await;
+    assert_eq!(recent["nodes"][0]["path"], "/e.txt");
+    assert_eq!(recent["nodes"][0]["modified_by"], "api");
+    let tree = json_of(send(&app, get("/drawer/v1/tree?path=/&depth=3")).await).await;
+    assert_eq!(tree["truncated"], false);
 }

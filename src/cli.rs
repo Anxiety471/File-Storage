@@ -14,7 +14,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::error::Error;
-use crate::service::{Drawer, Node, NodeUpdate, Properties, Ref, WriteOpts, WriteOutcome};
+use crate::service::{Drawer, Edit, Node, NodeUpdate, Properties, Ref, WriteOpts, WriteOutcome};
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8787";
 const DB_FILE: &str = "drawer.db";
@@ -57,6 +57,14 @@ pub enum Cmd {
         #[arg(short, long)]
         long: bool,
     },
+    /// Show a folder and everything below it as a tree.
+    Tree {
+        #[arg(default_value = "/")]
+        path: String,
+        /// How many levels to show.
+        #[arg(short = 'L', long, default_value_t = 32, value_name = "N")]
+        depth: usize,
+    },
     /// Create a folder and any missing parents.
     Mkdir { path: String },
     /// Upload a file as a new revision, creating it if needed. Use - to read stdin.
@@ -96,6 +104,38 @@ pub enum Cmd {
     },
     /// List a file's revisions, newest first.
     History { path: String },
+    /// Show what changed in a text file between two revisions, as a unified diff.
+    /// With no revisions, shows the latest change.
+    Diff {
+        path: String,
+        /// Older revision. Defaults to the one before TO; 0 is an empty file.
+        from: Option<i64>,
+        /// Newer revision. Defaults to the current one.
+        to: Option<i64>,
+        /// Lines of context around each change.
+        #[arg(short = 'U', long, default_value_t = 3, value_name = "N")]
+        context: usize,
+    },
+    /// Replace text in a file, saved as one new revision. OLD must appear exactly once unless --all.
+    Edit {
+        path: String,
+        /// Exact text to replace.
+        #[arg(long)]
+        old: String,
+        /// Replacement text; empty deletes OLD.
+        #[arg(long, default_value = "")]
+        new: String,
+        /// Replace every occurrence.
+        #[arg(long)]
+        all: bool,
+        #[arg(short, long, default_value = "")]
+        comment: String,
+    },
+    /// List the most recently changed files, newest first, with who changed them.
+    Recent {
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+    },
     /// Make an older revision the current one. Adds a revision, so nothing is lost.
     Rollback {
         path: String,
@@ -127,10 +167,22 @@ pub enum Cmd {
     Unshare { path: String, principal: String },
     /// Check the store: database integrity, counts, blob files and the web UI.
     Doctor,
-    /// Print an MCP config entry that starts this drawer on this store.
+    /// Print the MCP config for an agent harness: stdio on this store, or --url for a running server.
     McpConfig {
         #[arg(long, value_enum, default_value_t = McpFormat::Hermes)]
         format: McpFormat,
+        /// Connect to a running `drawer serve` at this MCP URL (e.g. http://127.0.0.1:8787/mcp)
+        /// instead of starting drawer over stdio.
+        #[arg(long, value_name = "URL")]
+        url: Option<String>,
+        /// Name the server entry. Tools show up as e.g. mcp__NAME__drawer_read.
+        #[arg(long, default_value = "drawer")]
+        name: String,
+    },
+    /// Print a shell completion script, e.g. `drawer completions zsh > ~/.zfunc/_drawer`.
+    Completions {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
     },
 }
 
@@ -194,8 +246,18 @@ pub struct GetArgs {
 pub enum McpFormat {
     /// YAML for ~/.hermes/config.yaml.
     Hermes,
-    /// JSON with an mcpServers object, for Claude Desktop, Cursor and most other clients.
+    /// JSON with an mcpServers object, for Claude Desktop, Cursor, Windsurf and most other clients.
     Json,
+    /// A `claude mcp add` command for Claude Code.
+    ClaudeCode,
+    /// TOML for ~/.codex/config.toml (OpenAI Codex CLI).
+    Codex,
+    /// JSON for ~/.gemini/settings.json (Gemini CLI uses httpUrl for streamable HTTP).
+    Gemini,
+    /// JSON for .vscode/mcp.json (VS Code / Copilot agent mode).
+    Vscode,
+    /// JSON for opencode.json (opencode).
+    Opencode,
 }
 
 fn parse_prop(s: &str) -> std::result::Result<(String, String), String> {
@@ -218,8 +280,13 @@ pub async fn run() -> ExitCode {
 
 async fn dispatch(cli: Cli) -> Result<()> {
     let cmd = cli.cmd.unwrap_or_else(|| Cmd::Serve(ServeArgs::from_env()));
-    if let Cmd::McpConfig { format } = &cmd {
-        print!("{}", mcp_config(*format, &cli.data_dir)?);
+    if let Cmd::McpConfig { format, url, name } = &cmd {
+        print!("{}", mcp_config(*format, &cli.data_dir, url.as_deref(), name)?);
+        return Ok(());
+    }
+    if let Cmd::Completions { shell } = &cmd {
+        let mut command = <Cli as clap::CommandFactory>::command();
+        clap_complete::generate(*shell, &mut command, "drawer", &mut std::io::stdout());
         return Ok(());
     }
     if matches!(cmd, Cmd::Serve(_) | Cmd::Stdio) {
@@ -237,13 +304,15 @@ async fn dispatch(cli: Cli) -> Result<()> {
     }
 
     let svc = Drawer::open(&cli.data_dir).await?;
+    // MCP over stdio records the client's own name unless an author was set explicitly.
+    let mcp_author = cli.author.clone();
     let actor = cli.author.unwrap_or_else(default_author);
     let json = cli.json;
     match cmd {
         Cmd::Serve(args) => serve(svc, &cli.data_dir, args).await,
         Cmd::Stdio => {
             use rmcp::ServiceExt;
-            let running = crate::mcp::DrawerMcp::new(svc).serve(rmcp::transport::stdio()).await?;
+            let running = crate::mcp::DrawerMcp::new(svc).with_author(mcp_author).serve(rmcp::transport::stdio()).await?;
             running.waiting().await?;
             Ok(())
         }
@@ -266,6 +335,19 @@ async fn dispatch(cli: Cli) -> Result<()> {
                     println!("{}", display_name(n));
                 }
             }
+            Ok(())
+        }
+        Cmd::Tree { path, depth } => {
+            let (nodes, truncated) = svc.walk(&path, depth).await?;
+            if json {
+                return emit_json(&json!({ "entries": nodes, "truncated": truncated }));
+            }
+            println!("{}", crate::service::normalize(&path)?);
+            print_tree(&nodes, &crate::service::normalize(&path)?);
+            let files = nodes.iter().filter(|n| n.kind == "file").count();
+            let count = |n: usize, what: &str| format!("{n} {what}{}", if n == 1 { "" } else { "s" });
+            let cut = if truncated { " (cut short)" } else { "" };
+            println!("\n{}, {}{cut}", count(nodes.len() - files, "folder"), count(files, "file"));
             Ok(())
         }
         Cmd::Mkdir { path } => {
@@ -385,6 +467,39 @@ async fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Cmd::Diff { path, from, to, context } => {
+            let d = svc.diff(Ref::Path(&path), from, to, context).await?;
+            if json {
+                return emit_json(&d);
+            }
+            if d.diff.is_empty() {
+                println!("{} revisions {} and {} have the same content", d.path, d.from, d.to);
+            } else {
+                print_diff(&d.diff);
+            }
+            Ok(())
+        }
+        Cmd::Edit { path, old, new, all, comment } => {
+            let e = Edit { old, new, replace_all: all };
+            let out = svc.edit(&path, &[e], write_opts(&actor, &comment, Vec::new(), None)).await?;
+            report_write(&out, json)
+        }
+        Cmd::Recent { limit } => {
+            let nodes = svc.recent(limit).await?;
+            if json {
+                return emit_json(&nodes);
+            }
+            for n in &nodes {
+                println!(
+                    "{}  {:<12} {:>4}  {}",
+                    short_time(&n.modified_at),
+                    n.modified_by.as_deref().unwrap_or("-"),
+                    revision_label(n),
+                    n.path
+                );
+            }
+            Ok(())
+        }
         Cmd::Rollback { path, revision, comment } => {
             let out = svc.rollback(Ref::Path(&path), revision, write_opts(&actor, &comment, Vec::new(), None)).await?;
             report_write(&out, json)
@@ -445,7 +560,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
             if json { emit_json(&grants) } else { println!("removed {principal} from {}", node.path); Ok(()) }
         }
         Cmd::Doctor => doctor(&svc, &cli.data_dir, json).await,
-        Cmd::McpConfig { .. } => unreachable!("handled before the store is opened"),
+        Cmd::McpConfig { .. } | Cmd::Completions { .. } => unreachable!("handled before the store is opened"),
     }
 }
 
@@ -494,21 +609,72 @@ fn default_ui_dir() -> Option<PathBuf> {
     shared.join("index.html").exists().then_some(shared)
 }
 
-fn mcp_config(format: McpFormat, data_dir: &Path) -> Result<String> {
-    let exe = std::env::current_exe().context("finding the drawer binary")?;
-    let exe = exe.display().to_string();
+fn mcp_config(format: McpFormat, data_dir: &Path, url: Option<&str>, name: &str) -> Result<String> {
+    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b)) {
+        bail!("--name must be letters, digits, - or _, so every harness accepts it as a key");
+    }
+    let exe = std::env::current_exe().context("finding the drawer binary")?.display().to_string();
     let data = absolute(data_dir).display().to_string();
-    Ok(match format {
-        McpFormat::Hermes => format!(
+    let args = json!(["--data-dir", data, "stdio"]);
+    // Inline list for YAML and TOML; JSON string escapes are valid in both.
+    let args_list = format!("[\"--data-dir\", {}, \"stdio\"]", json!(data));
+    // Placeholder where the client has no documented env interpolation.
+    let auth = json!({ "Authorization": "Bearer YOUR_TOKEN" });
+    let pretty = |v: serde_json::Value| -> Result<String> { Ok(format!("{}\n", serde_json::to_string_pretty(&v)?)) };
+    let sh = |s: &str| {
+        if s.bytes().all(|b| b.is_ascii_alphanumeric() || b"/._-:@=".contains(&b)) { s.to_string() } else { format!("'{}'", s.replace('\'', "'\\''")) }
+    };
+    let token_note = "drop the Authorization header if the server runs without --token";
+    Ok(match (format, url) {
+        (McpFormat::Hermes, None) => format!(
             "# Add under mcp_servers in ~/.hermes/config.yaml\n\
-             mcp_servers:\n  drawer:\n    command: {}\n    args: [\"--data-dir\", {}, \"stdio\"]\n",
-            json!(exe),
-            json!(data)
+             mcp_servers:\n  {name}:\n    command: {}\n    args: {args_list}\n",
+            json!(exe)
         ),
-        McpFormat::Json => {
-            let cfg = json!({ "mcpServers": { "drawer": { "command": exe, "args": ["--data-dir", data, "stdio"] } } });
-            format!("{}\n", serde_json::to_string_pretty(&cfg)?)
+        (McpFormat::Hermes, Some(url)) => format!(
+            "# Add under mcp_servers in ~/.hermes/config.yaml; {token_note}\n\
+             mcp_servers:\n  {name}:\n    url: {}\n    headers:\n      Authorization: \"Bearer YOUR_TOKEN\"\n",
+            json!(url)
+        ),
+        (McpFormat::Json, None) => pretty(json!({ "mcpServers": { name: { "command": exe, "args": args } } }))?,
+        (McpFormat::Json, Some(url)) => pretty(json!({ "mcpServers": { name: { "url": url, "headers": auth } } }))?,
+        (McpFormat::ClaudeCode, None) => format!(
+            "claude mcp add --scope user {} -- {} --data-dir {} stdio\n",
+            sh(name),
+            sh(&exe),
+            sh(&data)
+        ),
+        (McpFormat::ClaudeCode, Some(url)) => format!(
+            "# {token_note}\nclaude mcp add --scope user --transport http {} {} --header \"Authorization: Bearer $DRAWER_TOKEN\"\n",
+            sh(name),
+            sh(url)
+        ),
+        (McpFormat::Codex, None) => format!(
+            "# Add to ~/.codex/config.toml\n[mcp_servers.{name}]\ncommand = {}\nargs = {args_list}\n",
+            json!(exe)
+        ),
+        (McpFormat::Codex, Some(url)) => format!(
+            "# Add to ~/.codex/config.toml; remove bearer_token_env_var if the server runs without --token\n\
+             [mcp_servers.{name}]\nurl = {}\nbearer_token_env_var = \"DRAWER_TOKEN\"\n",
+            json!(url)
+        ),
+        (McpFormat::Gemini, None) => pretty(json!({ "mcpServers": { name: { "command": exe, "args": args, "trust": false } } }))?,
+        (McpFormat::Gemini, Some(url)) => {
+            pretty(json!({ "mcpServers": { name: { "httpUrl": url, "headers": { "Authorization": "Bearer ${DRAWER_TOKEN}" } } } }))?
         }
+        (McpFormat::Vscode, None) => pretty(json!({ "servers": { name: { "type": "stdio", "command": exe, "args": args } } }))?,
+        (McpFormat::Vscode, Some(url)) => pretty(json!({
+            "inputs": [{ "type": "promptString", "id": "drawer-token", "description": "Drawer bearer token", "password": true }],
+            "servers": { name: { "type": "http", "url": url, "headers": { "Authorization": "Bearer ${input:drawer-token}" } } }
+        }))?,
+        (McpFormat::Opencode, None) => pretty(json!({
+            "$schema": "https://opencode.ai/config.json",
+            "mcp": { name: { "type": "local", "command": [exe, "--data-dir", data, "stdio"], "enabled": true } }
+        }))?,
+        (McpFormat::Opencode, Some(url)) => pretty(json!({
+            "$schema": "https://opencode.ai/config.json",
+            "mcp": { name: { "type": "remote", "url": url, "headers": { "Authorization": "Bearer {env:DRAWER_TOKEN}" }, "enabled": true } }
+        }))?,
     })
 }
 
@@ -610,6 +776,43 @@ fn print_stat(n: &Node) {
     row("trashed", yes_no(n.trashed));
     for (k, v) in &n.properties {
         row("prop", format!("{k}={v}"));
+    }
+}
+
+/// `tree`-style drawing of nodes from `walk`, which come depth first in path order.
+fn print_tree(nodes: &[Node], root: &str) {
+    let depth = |n: &Node| n.path[root.trim_end_matches('/').len()..].matches('/').count();
+    for (i, n) in nodes.iter().enumerate() {
+        let d = depth(n);
+        let mut prefix = String::new();
+        for level in 1..d {
+            // A vertical bar continues while a later node sits at this level under the same parent.
+            let open = nodes[i + 1..].iter().take_while(|m| depth(m) >= level).any(|m| depth(m) == level);
+            prefix.push_str(if open { "│   " } else { "    " });
+        }
+        let last = !nodes[i + 1..].iter().take_while(|m| depth(m) >= d).any(|m| depth(m) == d);
+        prefix.push_str(if last { "└── " } else { "├── " });
+        let rev = n.head_revision.map(|r| format!("  (r{r}, {})", size_label(n))).unwrap_or_default();
+        println!("{prefix}{}{rev}", display_name(n));
+    }
+}
+
+/// A unified diff, colored when stdout is a terminal.
+fn print_diff(diff: &str) {
+    use std::io::IsTerminal;
+    let color = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    for line in diff.lines() {
+        let code = match line.as_bytes().first() {
+            _ if !color => None,
+            Some(b'+') if !line.starts_with("+++") => Some("32"),
+            Some(b'-') if !line.starts_with("---") => Some("31"),
+            Some(b'@') => Some("36"),
+            _ => None,
+        };
+        match code {
+            Some(c) => println!("\x1b[{c}m{line}\x1b[0m"),
+            None => println!("{line}"),
+        }
     }
 }
 

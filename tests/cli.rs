@@ -291,3 +291,46 @@ fn version_flag_prints_the_crate_version() {
     let out = ok(Command::new(env!("CARGO_BIN_EXE_drawer")).arg("--version").output().unwrap());
     assert!(out.starts_with("drawer 0.1.0"), "{out}");
 }
+
+#[test]
+fn edit_diff_tree_and_recent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("store");
+    let file = local(tmp.path(), "plan.md", b"step one\nstep two\n");
+    ok(drawer(&data, &["put", file.to_str().unwrap(), "/work/"]));
+    ok(drawer(&data, &["mkdir", "/work/empty"]));
+
+    let out = ok(drawer(&data, &["edit", "/work/plan.md", "--old", "two", "--new", "2", "-c", "shorter"]));
+    assert!(out.contains("revision 2"), "{out}");
+    let err = fail(drawer(&data, &["edit", "/work/plan.md", "--old", "step", "--new", "x"]));
+    assert!(err.contains("2 times"), "{err}");
+
+    let diff = ok(drawer(&data, &["diff", "/work/plan.md"]));
+    assert!(diff.contains("-step two\n+step 2"), "{diff}");
+
+    let tree = ok(drawer(&data, &["tree"]));
+    assert!(tree.contains("└── work/"), "{tree}");
+    assert!(tree.contains("├── empty/") && tree.contains("└── plan.md"), "{tree}");
+    assert!(tree.contains("2 folders, 1 file"), "{tree}");
+
+    let recent = ok(drawer(&data, &["recent"]));
+    assert!(recent.contains("tester") && recent.contains("/work/plan.md"), "{recent}");
+}
+
+#[test]
+fn mcp_config_covers_each_harness_and_http() {
+    let run = |args: &[&str]| ok(Command::new(env!("CARGO_BIN_EXE_drawer")).args(args).output().unwrap());
+    assert!(run(&["mcp-config", "--format", "claude-code"]).starts_with("claude mcp add"));
+    let codex = run(&["mcp-config", "--format", "codex", "--url", "http://h:1/mcp"]);
+    assert!(codex.contains("[mcp_servers.drawer]") && codex.contains("url = \"http://h:1/mcp\""), "{codex}");
+    let gemini: serde_json::Value =
+        serde_json::from_str(&run(&["mcp-config", "--format", "gemini", "--url", "http://h:1/mcp"])).unwrap();
+    assert_eq!(gemini["mcpServers"]["drawer"]["httpUrl"], "http://h:1/mcp");
+    let vscode: serde_json::Value = serde_json::from_str(&run(&["mcp-config", "--format", "vscode", "--name", "files"])).unwrap();
+    assert_eq!(vscode["servers"]["files"]["type"], "stdio");
+    let opencode: serde_json::Value = serde_json::from_str(&run(&["mcp-config", "--format", "opencode"])).unwrap();
+    assert_eq!(opencode["mcp"]["drawer"]["type"], "local");
+    let err = fail(Command::new(env!("CARGO_BIN_EXE_drawer")).args(["mcp-config", "--name", "a b"]).output().unwrap());
+    assert!(err.contains("--name"), "{err}");
+    assert!(run(&["completions", "bash"]).contains("_drawer"));
+}
