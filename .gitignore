@@ -1,2 +1,5 @@
 /target
 /data
+
+__pycache__/
+*.pyc

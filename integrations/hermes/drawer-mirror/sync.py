@@ -99,9 +99,8 @@ def _load_plugin():
 
 
 def _skip_reason(path: Path) -> str | None:
-    """Why a candidate path is not synced, or None when it is fine."""
-    if path.is_symlink():
-        return "symlink"
+    """Why a candidate path is not synced, or None when it is fine. Symlinks are
+    refused by the callers, before the path is resolved."""
     name = path.name
     if name in {"config.yaml", "profile.yaml"} and path.is_relative_to(HERMES_HOME):
         return "Hermes configuration"
@@ -127,14 +126,17 @@ def _hermes_references() -> tuple[dict[str, None], dict[str, None]]:
         return {}, {}
     try:
         conn = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True)
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        print(f"drawer-mirror sync: cannot open {STATE_DB}: {exc}", file=sys.stderr)
         return {}, {}
     try:
         try:
             rows = conn.execute(
                 "select role, content from messages where role in ('assistant','tool') order by rowid"
             ).fetchall()
-        except sqlite3.Error:
+        except sqlite3.Error as exc:
+            # A changed Hermes schema must not look like "nothing to sync".
+            print(f"drawer-mirror sync: cannot read artifact references from {STATE_DB}: {exc}", file=sys.stderr)
             return {}, {}
     finally:
         conn.close()
@@ -164,7 +166,7 @@ def _candidate_files(roots: list[Path], files: dict[str, None]) -> dict[Path, No
         if not raw or "://" in raw or raw.lower().startswith(("http://", "https://")):
             continue
         path = Path(raw).expanduser()
-        if not path.is_absolute():
+        if not path.is_absolute() or path.is_symlink():
             continue
         try:
             resolved = path.resolve()
@@ -273,7 +275,7 @@ def _scan_hermes(mirror, args) -> int:
         except Exception as exc:  # noqa: BLE001 - one bad file must not stop the run
             failed += 1
             print(f"drawer-mirror sync: failed {path}: {exc}", file=sys.stderr)
-    if not args.no_links:
+    if not args.no_links and cfg["links"]:
         cleaned = mirror._extract_links("\n".join(urls)) if urls else []
         if args.dry_run:
             if cleaned and not args.quiet:
@@ -286,8 +288,17 @@ def _scan_hermes(mirror, args) -> int:
             except Exception as exc:  # noqa: BLE001
                 print(f"drawer-mirror sync: links failed: {exc}", file=sys.stderr)
     if not args.quiet:
-        print(f"drawer-mirror sync: {uploaded} uploaded, {skipped} skipped, {failed} failed")
+        verb = "would upload" if args.dry_run else "uploaded"
+        print(f"drawer-mirror sync: {uploaded} {verb}, {skipped} skipped, {failed} failed")
     return 1 if failed else 0
+
+
+def _walk_files(root: Path):
+    """Files under root, without descending into dependency, cache or hidden folders."""
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
+        for name in sorted(filenames):
+            yield Path(dirpath, name)
 
 
 def _backfill(mirror, args) -> int:
@@ -299,11 +310,12 @@ def _backfill(mirror, args) -> int:
     root = cfg["root"]
     remote = cfg["prefix"]
     uploaded = skipped = failed = 0
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
+    for path in _walk_files(root):
+        if path.is_symlink() or not path.is_file():
             continue
         rel = path.relative_to(root)
-        if any(part.startswith(".") for part in rel.parts) or path.stat().st_size > cfg["max_bytes"]:
+        if (any(part.startswith(".") for part in rel.parts) or _skip_reason(rel)
+                or path.stat().st_size > cfg["max_bytes"]):
             skipped += 1
             continue
         target = f"{remote}/{rel.as_posix()}"
@@ -321,7 +333,8 @@ def _backfill(mirror, args) -> int:
             failed += 1
             print(f"drawer-mirror sync: failed {path}: {exc}", file=sys.stderr)
     if not args.quiet:
-        print(f"drawer-mirror sync: {uploaded} uploaded, {skipped} skipped, {failed} failed")
+        verb = "would upload" if args.dry_run else "uploaded"
+        print(f"drawer-mirror sync: {uploaded} {verb}, {skipped} skipped, {failed} failed")
     return 1 if failed else 0
 
 
