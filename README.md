@@ -41,7 +41,35 @@ cd ui && npm ci && npm run build && cd ..   # optional, for the UI
 cargo run --release -- serve                # http://127.0.0.1:8787
 ```
 
-Options: `--data-dir` (`DRAWER_DATA_DIR`, default `./data`), `--addr` (`DRAWER_ADDR`), `--token` (`DRAWER_TOKEN`), `--ui-dir` (`DRAWER_UI_DIR`, default `./ui/dist`, then `../share/drawer/ui` beside the binary).
+Options: `--data-dir` (`DRAWER_DATA_DIR`, default `./data`), `--addr` (`DRAWER_ADDR`), `--token` (`DRAWER_TOKEN`), `--ui-dir` (`DRAWER_UI_DIR`, default `./ui/dist`, then `../share/drawer/ui` beside the binary). An empty `DRAWER_TOKEN` counts as unset. `serve` warns when it listens beyond loopback without a token.
+
+## Command line
+
+`drawer` with no subcommand runs `serve`. The file commands work on the store directly, so they need no server running. Run `drawer --help` or `drawer <command> --help` for every flag.
+
+```sh
+drawer put ./report.pdf /work/            # upload into a folder (a trailing / or an existing folder)
+drawer put - /notes/todo.md < todo.md     # from stdin; a stdin upload needs a file path
+drawer ls -l /work                        # kind, revision, size, modified, name
+drawer cat /notes/todo.md > copy.md       # stdout; --revision N for an old one
+drawer get /work/report.pdf               # save to ./report.pdf; --force to overwrite
+drawer history /notes/todo.md             # revisions, newest first
+drawer rollback /notes/todo.md 2          # adds revision 2's bytes as the new head
+drawer search "quarterly roadmap"         # names and contents
+drawer rm /notes/old.md                   # to the trash; the id is kept
+drawer trash                              # list it, with ids
+drawer restore <id>                       # bring it back
+drawer purge <id> --yes                   # gone for good
+drawer mv /a.md /archive/                 # rename or move; keeps the id
+drawer cp /a.md /b.md --revision 1
+drawer share /work bob writer             # grant on a folder covers everything under it
+drawer doctor                             # database check, counts, missing blob files, UI
+drawer mcp-config                         # paste into ~/.hermes/config.yaml (--format json for others)
+```
+
+Add `--json` to get machine-readable output from commands that return data. `--author` (`DRAWER_AUTHOR`) sets who a change is recorded as, and defaults to `$USER`.
+
+Writes are serialized within one process. A CLI write while a server is writing to the same store can race it, so route concurrent writes through one or the other.
 
 Releases: pushing a `v*` tag builds Linux (x86_64, aarch64) and macOS (x86_64, aarch64) binaries and attaches them with `SHA256SUMS` (`.github/workflows/release.yml`).
 

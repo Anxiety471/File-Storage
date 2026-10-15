@@ -41,6 +41,11 @@ impl BlobStore {
         Ok(hash)
     }
 
+    /// Whether the blob for `hash` is on disk.
+    pub async fn contains(&self, hash: &str) -> Result<bool> {
+        Ok(tokio::fs::try_exists(self.path_for(hash)?).await?)
+    }
+
     pub async fn get(&self, hash: &str) -> Result<Vec<u8>> {
         let path = self.path_for(hash)?;
         tokio::fs::read(&path)
