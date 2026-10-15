@@ -1,8 +1,8 @@
 manifest_version: 2
 api_version: 1
 name: drawer-mirror
-version: 0.1.0
-description: "Mirror files Hermes writes (write_file, patch) and the links it shares into a Drawer server over REST. Opt-in: set the mirror root."
+version: 0.3.0
+description: "Mirror Hermes writes and reply links; sync.py --hermes scans recorded artifact paths into Drawer without re-sending unchanged files. Configure the mirror root and Drawer URL in plugin settings."
 author: "Drawer"
 homepage: "https://github.com/Anxiety471/drawer"
 provides_hooks:
