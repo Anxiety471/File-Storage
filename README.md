@@ -25,7 +25,7 @@ drawer serve                                # http://127.0.0.1:8787
 
 The installer downloads the release for your machine, checks its SHA-256, and puts `drawer` in `~/.local/bin` with the UI in `~/.local/share/drawer/ui`. If no release exists for your platform it builds from source with cargo (installing Rust via rustup if needed).
 
-To update an install, run `drawer update`. It fetches the latest release for your machine, checks its SHA-256 against `SHA256SUMS`, and replaces the binary and the UI in place. `drawer update --check` only reports whether a newer release exists. Restart `drawer serve` afterwards to run the new version. The store is never touched.
+To update an install, run `drawer update`. It fetches the latest release for your machine, checks its SHA-256 against `SHA256SUMS`, and replaces the binary and the UI in place. `drawer update --check` only reports whether a newer release exists. Restart `drawer serve` afterwards to run the new version. The store is never touched. The web UI shows an **Update to vX** button in the top bar when a newer release exists; it asks first, then runs the same update.
 
 Then point an agent at it. `drawer mcp-config --format <harness>` prints the exact config for Hermes, Claude Code, Codex, Gemini CLI, VS Code, opencode, or any client that takes an `mcpServers` JSON block. See [MCP and agent harnesses](#mcp-and-agent-harnesses).
 
@@ -183,6 +183,8 @@ Base path `/drawer/v1`. Nodes are named by `path=` or `id=`. Mutations name thei
 | DELETE | `/nodes/{id}/permissions/{principal}` | remove a grant (owner only) |
 | GET | `/search?q=` | names first, then contents with `line` and `snippet` |
 | GET | `/recent?limit=` | live files, most recently changed first, with `modified_by` |
+| GET | `/update` | is a newer release published? `{current, latest, update_available}` |
+| POST | `/update` | install the latest release if newer; the server runs the new version after a restart |
 
 Files are served with `nosniff`, and everything except PDFs gets a `sandbox` CSP, so stored HTML or SVG never runs scripts. Write responses include `new_revision`: `false` means content and properties matched the head, so nothing was added.
 

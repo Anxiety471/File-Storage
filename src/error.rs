@@ -15,6 +15,9 @@ pub enum Error {
     Forbidden(String),
     #[error("internal error: {0}")]
     Internal(String),
+    /// A call to an outside service (the release host) failed. Not the caller's fault or ours.
+    #[error("{0}")]
+    Upstream(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -40,6 +43,7 @@ impl IntoResponse for Error {
             Error::PreconditionFailed(_) => StatusCode::PRECONDITION_FAILED,
             Error::Forbidden(_) => StatusCode::FORBIDDEN,
             Error::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Error::Upstream(_) => StatusCode::BAD_GATEWAY,
         };
         (status, Json(json!({ "error": self.to_string() }))).into_response()
     }

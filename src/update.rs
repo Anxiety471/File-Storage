@@ -1,63 +1,95 @@
-//! `drawer update`: replace this install with the latest GitHub release.
+//! Self-update: replace this install with the latest GitHub release.
 //!
 //! This does what install.sh does, from inside the binary: fetch the release archive for this
 //! platform and its SHA256SUMS, verify the checksum, then swap in the new binary and web UI.
 //! The binary is staged beside the old one and renamed over it, so an interrupted update leaves
 //! the previous binary in place. The store is never touched. curl and tar must be on PATH, as
 //! they already are for install.sh. A running `drawer serve` keeps its old code until restarted.
+//!
+//! The CLI (`drawer update`) and the REST API (`/drawer/v1/update`) both call into here.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 
 use anyhow::{Context, Result, anyhow, bail};
+use serde::Serialize;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 const DEFAULT_REPO: &str = "Anxiety471/drawer";
 const DEFAULT_API_URL: &str = "https://api.github.com";
 const DEFAULT_GITHUB_URL: &str = "https://github.com";
 
-/// Report whether a newer release exists (`check_only`), or install it.
-pub fn run(check_only: bool) -> Result<()> {
-    let repo = env_or("DRAWER_REPO", DEFAULT_REPO);
-    let current = env!("CARGO_PKG_VERSION");
-    let target = target()?;
-    let work = Workspace::new()?;
+/// One install at a time, so two requests cannot swap the same files.
+static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 
-    let release = work.path().join("release.json");
-    let api = format!(
-        "{}/repos/{repo}/releases/latest",
-        env_or("DRAWER_API_URL", DEFAULT_API_URL)
-    );
-    if !fetch(&api, &release)? {
-        bail!("{repo} has no published release yet, so there is nothing to update to");
+/// Where releases are read from. The environment overrides are for forks and for testing.
+#[derive(Clone, Debug)]
+pub struct Config {
+    pub repo: String,
+    pub api_url: String,
+    pub github_url: String,
+}
+
+impl Config {
+    /// GitHub, or the `DRAWER_REPO`, `DRAWER_API_URL` and `DRAWER_GITHUB_URL` overrides.
+    pub fn from_env() -> Self {
+        Self {
+            repo: env_or("DRAWER_REPO", DEFAULT_REPO),
+            api_url: env_or("DRAWER_API_URL", DEFAULT_API_URL),
+            github_url: env_or("DRAWER_GITHUB_URL", DEFAULT_GITHUB_URL),
+        }
     }
-    let metadata: serde_json::Value = serde_json::from_slice(&fs::read(&release)?)
+}
+
+/// What the latest release looks like next to the running version.
+#[derive(Debug, Serialize)]
+pub struct Check {
+    pub current: String,
+    pub latest: String,
+    pub update_available: bool,
+}
+
+/// Ask the release host for the latest release and compare it with this build.
+pub fn check(cfg: &Config) -> Result<Check> {
+    let current = env!("CARGO_PKG_VERSION");
+    let work = Workspace::new()?;
+    let release = work.path().join("release.json");
+    let api = format!("{}/repos/{}/releases/latest", cfg.api_url, cfg.repo);
+    if !fetch(&api, &release)? {
+        bail!(
+            "{} has no published release yet, so there is nothing to update to",
+            cfg.repo
+        );
+    }
+    let metadata: Value = serde_json::from_slice(&fs::read(&release)?)
         .context("GitHub's release metadata is not JSON")?;
-    let tag = metadata["tag_name"]
+    let latest = metadata["tag_name"]
         .as_str()
         .ok_or_else(|| anyhow!("the latest release has no tag_name"))?
         .to_string();
+    let update_available = parse_version(&latest)? > parse_version(current)?;
+    Ok(Check {
+        current: current.to_string(),
+        latest,
+        update_available,
+    })
+}
 
-    if parse_version(&tag)? <= parse_version(current)? {
-        println!("drawer {current} is up to date (latest release {tag})");
-        return Ok(());
-    }
-    if check_only {
-        println!(
-            "drawer {current} is installed; {tag} is available. Run `drawer update` to install it."
-        );
-        return Ok(());
-    }
+/// Download release `tag`, verify it, and replace the binary at `exe` and the UI beside it.
+pub fn install(cfg: &Config, tag: &str, exe: &Path) -> Result<()> {
+    // The tag goes into a download URL, so it has to be a plain version.
+    parse_version(tag)?;
+    let _lock = INSTALL_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    let exe = std::env::current_exe()
-        .and_then(|p| p.canonicalize())
-        .context("cannot find the running drawer binary")?;
+    let target = target()?;
+    let work = Workspace::new()?;
     let archive_name = format!("drawer-{target}.tar.gz");
-    let base = format!(
-        "{}/{repo}/releases/download/{tag}",
-        env_or("DRAWER_GITHUB_URL", DEFAULT_GITHUB_URL)
-    );
+    let base = format!("{}/{}/releases/download/{tag}", cfg.github_url, cfg.repo);
     let sums = work.path().join("SHA256SUMS");
     let archive = work.path().join(&archive_name);
     if !fetch(&format!("{base}/SHA256SUMS"), &sums)? {
@@ -82,7 +114,7 @@ pub fn run(check_only: bool) -> Result<()> {
     }
     let bundle = unpacked.join(format!("drawer-{target}"));
 
-    replace_binary(&bundle.join("drawer"), &exe)?;
+    replace_binary(&bundle.join("drawer"), exe)?;
     // The UI sits beside the binary at ../share/drawer/ui, as install.sh lays it out. Only
     // refresh it where it is already installed, so a binary built by hand gets no new folders.
     let ui = exe
@@ -94,14 +126,43 @@ pub fn run(check_only: bool) -> Result<()> {
     {
         replace_ui(&bundle.join("ui"), &ui)?;
     }
+    Ok(())
+}
 
-    println!("updated drawer {current} to {tag} at {}", exe.display());
+/// `drawer update`: report whether a newer release exists (`check_only`), or install it.
+pub fn run(check_only: bool) -> Result<()> {
+    let cfg = Config::from_env();
+    let status = check(&cfg)?;
+    if !status.update_available {
+        println!(
+            "drawer {} is up to date (latest release {})",
+            status.current, status.latest
+        );
+        return Ok(());
+    }
+    if check_only {
+        println!(
+            "drawer {} is installed; {} is available. Run `drawer update` to install it.",
+            status.current, status.latest
+        );
+        return Ok(());
+    }
+    let exe = std::env::current_exe()
+        .and_then(|p| p.canonicalize())
+        .context("cannot find the running drawer binary")?;
+    install(&cfg, &status.latest, &exe)?;
+    println!(
+        "updated drawer {} to {} at {}",
+        status.current,
+        status.latest,
+        exe.display()
+    );
     println!("restart `drawer serve` to run the new version");
     Ok(())
 }
 
 /// The archive name suffix for this build, matching the targets in the release workflow.
-fn target() -> Result<&'static str> {
+pub fn target() -> Result<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => Ok("x86_64-unknown-linux-gnu"),
         ("linux", "aarch64") => Ok("aarch64-unknown-linux-gnu"),
@@ -175,7 +236,7 @@ fn replace_binary(new: &Path, exe: &Path) -> Result<()> {
     let dir = exe
         .parent()
         .ok_or_else(|| anyhow!("{} has no parent directory", exe.display()))?;
-    let staged = dir.join(format!(".drawer-update-{}", std::process::id()));
+    let staged = dir.join(format!(".drawer-update-{}", uuid::Uuid::new_v4()));
     fs::copy(new, &staged).with_context(|| {
         format!(
             "cannot write to {}; run the update as a user who can write there",
@@ -233,13 +294,13 @@ fn env_or(key: &str, default: &str) -> String {
         .to_string()
 }
 
-/// A scratch directory under the system temp dir, removed when dropped.
+/// A scratch directory under the system temp dir, removed when dropped. Each one is unique,
+/// so concurrent checks cannot clear each other's files.
 struct Workspace(PathBuf);
 
 impl Workspace {
     fn new() -> Result<Self> {
-        let path = std::env::temp_dir().join(format!("drawer-update-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&path);
+        let path = std::env::temp_dir().join(format!("drawer-update-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&path).with_context(|| format!("cannot create {}", path.display()))?;
         Ok(Self(path))
     }
@@ -267,6 +328,8 @@ mod tests {
         assert!(parse_version("latest").is_err());
         assert!(parse_version("v1.2").is_err());
         assert!(parse_version("v1.2.3.4").is_err());
+        // A tag like this must not reach a download URL.
+        assert!(parse_version("v1.2.3/../x").is_err());
     }
 
     #[test]

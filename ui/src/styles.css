@@ -73,6 +73,7 @@ a { cursor: pointer; }
 
 /* Top bar */
 .topbar { display: flex; align-items: center; gap: 24px; padding: 8px 16px; height: 64px; }
+.update-btn { white-space: nowrap; }
 .brand { display: flex; flex-shrink: 0; align-items: center; gap: 10px; font-size: 20px; color: var(--text); text-decoration: none; min-width: 200px; }
 .brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: var(--accent); color: var(--accent-ink); }
 .search { flex: 1; max-width: 720px; display: flex; align-items: center; gap: 10px; background: var(--surface-2); border-radius: 999px; padding: 0 8px 0 18px; height: 46px; color: var(--muted); transition: background .15s, box-shadow .15s; }

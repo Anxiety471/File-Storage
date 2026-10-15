@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, Diff, Node, Revision, SearchHit, setToken, UNAUTHORIZED_EVENT } from "./api";
+import { api, ApiError, Diff, Node, Revision, SearchHit, setToken, UNAUTHORIZED_EVENT, UpdateStatus } from "./api";
 import { Badge, extOf, fileType, isTextViewer } from "./filetypes";
 import { Icon } from "./icons";
 import { BinaryCard, CodeEditor, DiffView, DocxView, HtmlView, ImageView, Loading, MarkdownView, MediaView, PdfView, SheetView } from "./viewers";
@@ -144,6 +144,7 @@ export function App() {
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
   const [newMenu, setNewMenu] = useState(false);
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
   const [sort, setSort] = useState<Sort>(loadSort);
   const searchInput = useRef<HTMLInputElement>(null);
 
@@ -156,6 +157,16 @@ export function App() {
     const t = setTimeout(() => setToast(null), toast.tone === "error" || toast.action ? 6000 : 3000);
     return () => clearTimeout(t);
   }, [toast]);
+
+  // Offer an update only when a newer release is published. Quiet on failure: offline, or no release yet.
+  useEffect(() => {
+    api
+      .updateCheck()
+      .then((status) => {
+        if (status.update_available) setUpdate(status);
+      })
+      .catch(() => {});
+  }, []);
 
   const run = useCallback(
     async (fn: () => Promise<void>) => {
@@ -451,6 +462,21 @@ export function App() {
       notify(`Moved “${n.name}” to the trash`, "ok", { label: "Undo", run: () => restore(n) });
     });
 
+  const askUpdate = () => {
+    if (!update) return;
+    setDialog({
+      kind: "confirm",
+      title: `Update Drawer to ${update.latest}?`,
+      body: "This downloads the release, checks its checksum and replaces the server's binary and web UI. Restart drawer serve afterwards to run the new version.",
+      action: "Update",
+      submit: async () => {
+        const result = await api.updateInstall();
+        setUpdate(null);
+        notify(result.updated ? `Updated to ${result.latest}. Restart drawer serve to run it.` : `Already on ${result.latest}.`);
+      },
+    });
+  };
+
   const purge = (n: Node) =>
     setDialog({
       kind: "confirm",
@@ -545,6 +571,11 @@ export function App() {
             </kbd>
           )}
         </form>
+        {update && (
+          <button className="btn primary update-btn" onClick={askUpdate}>
+            Update to {update.latest}
+          </button>
+        )}
       </header>
 
       <div className="body">

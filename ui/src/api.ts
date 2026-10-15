@@ -36,6 +36,19 @@ export interface WriteOutcome {
   new_revision: boolean;
 }
 
+export interface UpdateStatus {
+  current: string;
+  latest: string;
+  update_available: boolean;
+}
+
+export interface UpdateResult {
+  current: string;
+  latest: string;
+  updated: boolean;
+  restart_required: boolean;
+}
+
 export interface SearchHit {
   id: string;
   path: string;
@@ -112,6 +125,16 @@ const json = (method: string, body: unknown): RequestInit => ({
 });
 
 export const api = {
+  /** Is a newer release published than the one this server runs? */
+  async updateCheck(): Promise<UpdateStatus> {
+    const r = await check(await fetch(`${BASE}/update`, { headers: headers() }));
+    return r.json();
+  },
+  /** Installs the latest release if it is newer. The server runs the new version after a restart. */
+  async updateInstall(): Promise<UpdateResult> {
+    const r = await check(await fetch(`${BASE}/update`, { method: "POST", headers: headers() }));
+    return r.json();
+  },
   async tree(path: string): Promise<Node[]> {
     const r = await check(await fetch(`${BASE}/tree?${q(path)}`, { headers: headers() }));
     return (await r.json()).entries;
