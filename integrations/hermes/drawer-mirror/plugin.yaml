@@ -1,0 +1,9 @@
+name: drawer-mirror
+version: 0.1.0
+description: "Mirror files Hermes writes (write_file, patch) and the links it shares into a Drawer server over REST. Opt-in: set DRAWER_MIRROR_ROOT."
+author: "Drawer"
+homepage: "https://github.com/Anxiety471/File-Storage"
+provides_hooks:
+  - post_tool_call
+  - post_llm_call
+tags: [storage, drawer, mirror]
