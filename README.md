@@ -125,7 +125,7 @@ Setup for Hermes, Claude Code, Claude Desktop, Codex, Gemini CLI, Cursor, VS Cod
 
 ## REST API
 
-Base path `/drawer/v1`. Nodes are named by `path=` or `id=`. Mutations name their actor with the `x-drawer-author` header (default `api`). `GET /health` returns `{"ok": true}`.
+Base path `/drawer/v1`. Nodes are named by `path=` or `id=`. Mutations name their actor with the `x-drawer-author` header (default `api`). `GET /health` and `GET /drawer/v1/health` both return `{"ok": true}`. With `--token` set, both need the bearer token like everything else.
 
 | Method | Path | Notes |
 | --- | --- | --- |

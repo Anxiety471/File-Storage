@@ -208,6 +208,18 @@ async fn permissions_are_enforced_over_rest() {
 }
 
 #[tokio::test]
+async fn top_level_health_is_json_not_the_ui_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let ui = tempfile::tempdir().unwrap();
+    std::fs::write(ui.path().join("index.html"), "<!doctype html><title>ui</title>").unwrap();
+    let app = drawer::app(Drawer::open(dir.path()).await.unwrap(), None, Some(ui.path().to_path_buf()));
+    let resp = send(&app, get("/health")).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(json_of(resp).await, json!({"ok": true}));
+    assert_eq!(json_of(send(&app, get("/drawer/v1/health")).await).await, json!({"ok": true}));
+}
+
+#[tokio::test]
 async fn bearer_token_is_enforced() {
     let dir = tempfile::tempdir().unwrap();
     let app = drawer::app(Drawer::open(dir.path()).await.unwrap(), Some("s3cret".into()), None);
