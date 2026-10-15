@@ -1,9 +1,39 @@
+manifest_version: 2
+api_version: 1
 name: drawer-mirror
 version: 0.1.0
-description: "Mirror files Hermes writes (write_file, patch) and the links it shares into a Drawer server over REST. Opt-in: set DRAWER_MIRROR_ROOT."
+description: "Mirror files Hermes writes (write_file, patch) and the links it shares into a Drawer server over REST. Opt-in: set the mirror root."
 author: "Drawer"
 homepage: "https://github.com/Anxiety471/drawer"
 provides_hooks:
   - post_tool_call
   - post_llm_call
 tags: [storage, drawer, mirror]
+# Settings live under plugins.entries.drawer-mirror.settings. Each one falls back to the
+# environment variable named in the description. The Drawer token is a secret, so it stays
+# in ~/.hermes/.env as DRAWER_TOKEN.
+config_schema:
+  root:
+    type: str
+    label: "Mirror root"
+    description: "The only folder whose files are mirrored (env DRAWER_MIRROR_ROOT). Mirroring is off while this is empty. It must not contain Hermes' own home."
+  url:
+    type: str
+    label: "Drawer URL"
+    description: "Base URL of the Drawer server (env DRAWER_URL). Default http://127.0.0.1:8787."
+  prefix:
+    type: str
+    label: "Drawer folder"
+    description: "Drawer folder that mirrors the root (env DRAWER_MIRROR_PREFIX). Default /hermes."
+  author:
+    type: str
+    label: "Author"
+    description: "Author recorded on each revision (env DRAWER_MIRROR_AUTHOR). Default hermes."
+  max_bytes:
+    type: str
+    label: "Max bytes"
+    description: "Files bigger than this are skipped (env DRAWER_MIRROR_MAX_BYTES). Default 536870912 (512 MB)."
+  links:
+    type: str
+    label: "Record links"
+    description: "Set to 0 to stop recording links from replies in <prefix>/links.md (env DRAWER_MIRROR_LINKS). Default on."

@@ -40,19 +40,37 @@ plugins:
     - drawer-mirror
 ```
 
-`~/.hermes/.env`:
+Settings go in the plugin's own block in `~/.hermes/config.yaml`. Hermes shows them
+in the Desktop app's plugin settings too:
 
-```sh
-DRAWER_URL=http://127.0.0.1:8787
-DRAWER_TOKEN=change-me            # only if drawer runs with --token
-DRAWER_MIRROR_ROOT=~/.hermes/artifacts   # the only folder that gets mirrored
-DRAWER_MIRROR_PREFIX=/hermes      # Drawer folder for that root (default /hermes); links go to <prefix>/links.md
-# DRAWER_MIRROR_LINKS=0           # keep files, skip the links list (default on)
-# DRAWER_MIRROR_AUTHOR=hermes     # author on each revision (default hermes)
-# DRAWER_MIRROR_MAX_BYTES=536870912   # skip bigger files (default 512 MB)
+```yaml
+plugins:
+  entries:
+    drawer-mirror:
+      settings:
+        root: ~/.hermes/artifacts     # the only folder that gets mirrored
+        url: http://127.0.0.1:8787
+        prefix: /hermes               # Drawer folder for that root; links go to <prefix>/links.md
+        # links: "0"                  # keep files, skip the links list (default on)
+        # author: hermes              # author on each revision (default hermes)
+        # max_bytes: "536870912"      # skip bigger files (default 512 MB)
 ```
 
+The Drawer token is a secret, so it stays in `~/.hermes/.env`:
+
+```sh
+DRAWER_TOKEN=change-me            # only if drawer runs with --token
+```
+
+Every setting also works as an environment variable in `~/.hermes/.env`, which
+is what older installs use. A value in `config.yaml` wins over the variable:
+`DRAWER_MIRROR_ROOT`, `DRAWER_URL`, `DRAWER_MIRROR_PREFIX`, `DRAWER_MIRROR_LINKS`,
+`DRAWER_MIRROR_AUTHOR`, `DRAWER_MIRROR_MAX_BYTES`.
+
 Restart Hermes so the plugin loads. `/reload-mcp` only reloads MCP servers.
+`hermes plugins check-updates` may report "provenance drift" for a plugin copied
+into a subdirectory, since there is no `.git` there. It is cosmetic.
+`hermes plugins update` still resolves correctly.
 
 Then `~/.hermes/artifacts/reports/plan.md` appears in Drawer at
 `/hermes/reports/plan.md`.
@@ -72,8 +90,9 @@ Then `~/.hermes/artifacts/reports/plan.md` appears in Drawer at
 - **Only links in Hermes' replies are recorded.** Links that appear only in
   terminal or tool output are not, so the list is smaller than Hermes' Artifacts
   panel.
-- **Failed tool calls are skipped.** A `write_file` or `patch` that returned an
-  `error` is not mirrored.
+- **Failed tool calls are skipped.** On Hermes v0.22 and later, a `write_file`
+  or `patch` whose `status` is `error` is not mirrored. Older versions are
+  checked by the `error` key in the result instead.
 - **Best effort.** If Drawer is down or slow, the hook logs a warning after at
   most 10 seconds. The tool result and the agent turn are unchanged.
 
@@ -104,8 +123,9 @@ python3 -m unittest discover -s integrations/hermes/drawer-mirror/tests -v
 These use the standard library only and a fake Drawer, so Hermes does not need to
 be installed. They cover path rules, hidden and symlinked files, failed results,
 the root containment check, the size cap, the bearer header, Drawer being
-unreachable, link cleaning and dedupe, the `if_head_revision` retry on a 412, and
-the links switch.
+unreachable, link cleaning and dedupe, the `if_head_revision` retry on a 412, the
+links switch, a `status` of `error` (and the result-parsing fallback for older Hermes), and
+settings read from Hermes config with the environment as fallback.
 
 The hook was also run against `drawer serve` in a scratch directory: a write, an
 unchanged rewrite (no revision), a `patch` edit (revision 2), a failed `patch`
@@ -113,9 +133,7 @@ unchanged rewrite (no revision), a `patch` edit (revision 2), a failed `patch`
 produced three links in `/hermes/links.md` (a repeat was skipped, a query string
 was stripped), revision 2, and a stale `if_head_revision` returned 412.
 
-Not verified: a live Hermes Agent run. Hermes was not installed in the environment
-where this was written. The hook API used here (`register(ctx)`,
-`ctx.register_hook("post_tool_call", fn)`, the `tool_name` / `args` / `result`
-keyword arguments) is taken from Hermes' plugin docs and source
-(`website/docs/user-guide/features/hooks.md`, `hermes_cli/plugins.py`). Run one
-`write_file` against a real Hermes before you rely on it.
+Verified on Hermes Agent v0.22.0: a real `write_file` went through the hook and
+landed in Drawer. The hook API used here (`register(ctx)`,
+`ctx.register_hook("post_tool_call", fn)`, the `tool_name` / `args` / `result` /
+`status` keyword arguments, `ctx.get_config`) follows Hermes' plugin docs.

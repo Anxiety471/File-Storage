@@ -97,6 +97,7 @@ class MirrorTests(unittest.TestCase):
         }
         self._saved = {k: os.environ.get(k) for k in list(self.env) + ["DRAWER_MIRROR_MAX_BYTES", "DRAWER_MIRROR_LINKS"]}
         os.environ.update(self.env)
+        mirror._CTX = None
         os.environ.pop("DRAWER_MIRROR_MAX_BYTES", None)
         os.environ.pop("DRAWER_MIRROR_LINKS", None)
         FakeDrawer.puts = []
@@ -104,6 +105,7 @@ class MirrorTests(unittest.TestCase):
         FakeDrawer.fail_next_put_with_412 = 0
 
     def tearDown(self):
+        mirror._CTX = None
         for k, v in self._saved.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -189,6 +191,16 @@ class MirrorTests(unittest.TestCase):
         mirror._on_post_tool_call(tool_name="write_file", args={"path": path}, result='{"error": "disk full"}')
         self.assertEqual(FakeDrawer.puts, [])
 
+    def test_status_error_skips_even_when_the_result_looks_fine(self):
+        path = self.write("s.md", b"x")
+        mirror._on_post_tool_call(tool_name="write_file", args={"path": path}, result='{"ok": true}', status="error")
+        self.assertEqual(FakeDrawer.puts, [])
+
+    def test_status_ok_is_mirrored_whatever_the_result_text(self):
+        path = self.write("ok.md", b"x")
+        mirror._on_post_tool_call(tool_name="write_file", args={"path": path}, result="", status="ok")
+        self.assertEqual(len(self.file_puts()), 1)
+
     def test_other_tools_are_ignored(self):
         path = self.write("t.txt", b"x")
         mirror._on_post_tool_call(tool_name="terminal", args={"command": f"echo x > {path}"}, result="{}")
@@ -228,6 +240,39 @@ class MirrorTests(unittest.TestCase):
         finally:
             os.chdir(cwd)
         self.assertEqual(self.file_puts()[0]["path"], "/hermes/rel/one.md")
+
+    def test_settings_from_hermes_config_win_and_env_fills_the_rest(self):
+        class Configured(Ctx):
+            def get_config(self, key, default=None):
+                return {"url": "http://cfg.example:1", "prefix": "/from-config"}.get(key, default)
+
+        mirror.register(Configured())
+        cfg = mirror._settings()
+        self.assertEqual(cfg["url"], "http://cfg.example:1")
+        self.assertEqual(cfg["prefix"], "/from-config")
+        self.assertEqual(cfg["root"], self.root.resolve())  # from the env, not in config
+        self.assertEqual(cfg["author"], "hermes")
+
+    def test_config_root_alone_enables_mirroring(self):
+        root = os.environ.pop("DRAWER_MIRROR_ROOT")
+
+        class RootOnly(Ctx):
+            def get_config(self, key, default=None):
+                return root if key == "root" else default
+
+        mirror.register(RootOnly())
+        self.assertIsNotNone(mirror._settings())
+        path = self.write("cfg.md", b"from config")
+        mirror._on_post_tool_call(tool_name="write_file", args={"path": path}, result='{"ok": true}')
+        self.assertEqual(self.file_puts()[0]["path"], "/hermes/cfg.md")
+
+    def test_a_failing_config_lookup_falls_back_to_env(self):
+        class Broken(Ctx):
+            def get_config(self, key, default=None):
+                raise RuntimeError("config unreadable")
+
+        mirror.register(Broken())
+        self.assertEqual(mirror._settings()["url"], self.url)
 
     # ---- link capture ---------------------------------------------------------------
 
