@@ -143,6 +143,7 @@ export function App() {
   const [dirty, setDirty] = useState(false);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [shareTarget, setShareTarget] = useState<Node | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [toast, setToast] = useState<Toast | null>(null);
   const [newMenu, setNewMenu] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
@@ -183,6 +184,8 @@ export function App() {
   }, [view]);
   // Recent keeps the server's newest-first order; everything else follows the chosen column.
   const shown = useMemo(() => (view.kind === "recent" ? nodes : sortNodes(nodes, sort)), [nodes, sort, view.kind]);
+  const chosen = shown.filter((n) => selected.has(n.id));
+  useEffect(() => setSelected(new Set()), [view]);
 
   const refresh = useCallback(
     () =>
@@ -395,6 +398,37 @@ export function App() {
         setUploadProgress(null);
       }
     });
+
+  const bulkTrash = () => setDialog({
+    kind: "confirm",
+    title: `Move ${chosen.length} items to trash?`,
+    body: "All selected files and folders will be recoverable from Trash.",
+    action: "Move to trash",
+    submit: async () => {
+      for (const n of chosen) await api.trash(n.path);
+      setSelected(new Set());
+      await refresh();
+    },
+  });
+
+  const bulkMove = () => setDialog({
+    kind: "prompt",
+    title: `Move ${chosen.length} items`,
+    label: "Destination folder (for example /archive)",
+    initial: "/",
+    action: "Move",
+    submit: async (folder) => {
+      const target = folder.startsWith("/") ? folder : `/${folder}`;
+      for (const n of chosen) await api.move(n.id, join(target.replace(/\\/$/, "") || "/", n.name));
+      setSelected(new Set());
+      await refresh();
+    },
+  });
+
+  const bulkDownload = () => run(async () => {
+    for (const n of chosen.filter((n) => n.kind === "file")) await api.download(n.path);
+    notify("Downloads requested. Your browser may require permission for multiple downloads.");
+  });
 
   const newFolder = () => {
     setNewMenu(false);
@@ -714,6 +748,17 @@ export function App() {
                   <Icon name="refresh" size={18} />
                 </button>
               </div>
+              {chosen.length > 0 && view.kind !== "trash" && !file && (
+                <div className="bulk-bar">
+                  <span>{chosen.length} selected</span>
+                  <button className="btn" type="button" onClick={bulkDownload} disabled={!chosen.some((n) => n.kind === "file")}>
+                    Download files
+                  </button>
+                  <button className="btn" type="button" onClick={bulkMove}>Move selected</button>
+                  <button className="btn danger" type="button" onClick={bulkTrash}>Move to trash</button>
+                  <button className="btn" type="button" onClick={() => setSelected(new Set())}>Clear</button>
+                </div>
+              )}
               {view.kind === "trash" && nodes.length > 0 && (
                 <p className="hint">Items in the trash keep their history. Restore puts them back where they were.</p>
               )}
@@ -722,6 +767,13 @@ export function App() {
               ) : (
                 <FileTable
                   nodes={shown}
+                  selected={selected}
+                  onSelect={(id, checked) => setSelected((prev) => {
+                    const next = new Set(prev);
+                    if (checked) next.add(id); else next.delete(id);
+                    return next;
+                  })}
+                  onSelectAll={(checked) => setSelected(checked ? new Set(shown.map((n) => n.id)) : new Set())}
                   loading={loading}
                   mode={view.kind === "drive" ? "drive" : view.kind}
                   sort={view.kind === "recent" ? null : sort}
@@ -802,6 +854,9 @@ function Breadcrumbs({ path, go }: { path: string; go: (p: string) => void }) {
 
 function FileTable(props: {
   nodes: Node[];
+  selected: Set<string>;
+  onSelect: (id: string, checked: boolean) => void;
+  onSelectAll: (checked: boolean) => void;
   loading: boolean;
   mode: "drive" | "recent" | "starred" | "trash";
   /** null: the order is fixed (Recent), so headers don't sort. */
@@ -851,6 +906,12 @@ function FileTable(props: {
     <table className="files">
       <thead>
         <tr>
+          <th className="col-select">
+            {mode !== "trash" && (
+              <input type="checkbox" aria-label="Select all files" checked={nodes.length > 0 && nodes.every((n) => props.selected.has(n.id))}
+                onChange={(e) => props.onSelectAll(e.currentTarget.checked)} />
+            )}
+          </th>
           {head("name", "Name", "")}
           <th className="col-md">{mode === "drive" ? "Last change by" : "Location"}</th>
           {head("modified", mode === "trash" ? "Trashed" : "Modified", "col-sm")}
@@ -870,6 +931,12 @@ function FileTable(props: {
               setMenu(n.id);
             }}
           >
+            <td className="col-select">
+              {mode !== "trash" && (
+                <input type="checkbox" aria-label={`Select ${n.name}`} checked={props.selected.has(n.id)}
+                  onChange={(e) => props.onSelect(n.id, e.currentTarget.checked)} />
+              )}
+            </td>
             <td>
               <button className="name" disabled={mode === "trash"} onClick={() => props.open(n)} title={n.path}>
                 <KindIcon node={n} />
