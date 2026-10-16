@@ -5,6 +5,7 @@ pub mod blob;
 pub mod cli;
 pub mod error;
 pub mod links;
+pub mod transfers;
 pub mod mcp;
 pub mod service;
 
