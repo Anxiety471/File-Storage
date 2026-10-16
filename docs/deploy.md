@@ -27,9 +27,9 @@ With `DRAWER_ADMIN_PASSWORD` configured, all REST and MCP routes require an auth
 
 - Upload multiple files, drag/drop, or choose **New → Upload folder**.
 - Transfers use 4 MiB chunks and can resume by choosing the **same file again**. The browser stores a transfer ID matched to the destination path, file size, and last-modified timestamp. If the browser has been reset or the local file changed, start a new transfer.
-- **Pause** stops the current transfer without deleting its staging file. Staged uploads expire after 48 hours; cleanup of abandoned staging files is not automated yet.
+- **Pause** stops the current transfer without deleting its staging file. Staged uploads expire after 48 hours; the server removes expired staging files on startup and hourly.
 - Each resumable transfer is verified by byte length before commit. An API caller may additionally submit a SHA-256 hash, which is verified at finalization.
-- Currently the entire file can be as large as **4 GiB** via chunk upload. The older single-request `PUT /files` path remains limited to 512 MiB.
+- Resumable uploads support up to **4 GiB** and public/private downloads stream directly from disk rather than loading the entire file into server RAM. Private downloads accept standard single byte-range requests. The older single-request `PUT /files` path remains limited to 512 MiB.
 - Select multiple items to move/trash or download file-by-file. Browser vendors may block multiple simultaneous downloads.
 
 ## Data and backups
@@ -59,5 +59,5 @@ Restore checks the manifest, prompts for `RESTORE`, creates a safety backup of t
 - This is a single-admin personal installation, not an organization-wide file access manager.
 - Keep `.env` private, use unique high-entropy values, and keep the public `/s/<token>` URLs secret. Anyone who possesses a valid link can download that file until expiry or revocation.
 - Browser sessions are stored in RAM and are lost on restart; admin password is supplied from the environment.
-- Upload quotas, automated expired-staging garbage collection, a ZIP bundle download, and multi-device background sync are outside this version.
+- Per-user upload quotas, a ZIP bundle download, and multi-device background sync are outside this version.
 - Do not treat old cooperative permissions (with self-declared agent names) as an authentication mechanism; use admin sessions and bearer tokens for all network access.
