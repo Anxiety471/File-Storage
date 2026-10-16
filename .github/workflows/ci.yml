@@ -43,6 +43,11 @@ jobs:
           done
           grep -q '"mode":"password"' /tmp/drawer-status.json
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/drawer/v1/tree?path=/)" = 401
+      - name: Verify backup archive creation
+        run: |
+          bash ops/backup.sh
+          test -n "$(find backups -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          test -n "$(find backups -maxdepth 1 -name '*.tar.gz.sha256' -print -quit)"
       - name: Container logs on failure
         if: failure()
         run: docker compose logs --no-color || true
