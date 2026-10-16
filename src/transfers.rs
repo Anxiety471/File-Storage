@@ -65,10 +65,9 @@ pub async fn start(State(s): State<Drawer>, headers: HeaderMap, Json(b): Json<Ne
     if norm == "/" || !(0..=MAX_TRANSFER_BYTES).contains(&b.size) {
         return Err(Error::Invalid("transfer must be a non-root file up to 4 GiB".into()));
     }
-    if let Some(expected) = &b.sha256 {
-        if expected.len() != 64 || !expected.bytes().all(|v| v.is_ascii_hexdigit()) {
+    if let Some(expected) = &b.sha256
+        && (expected.len() != 64 || !expected.bytes().all(|v| v.is_ascii_hexdigit())) {
             return Err(Error::Invalid("sha256 must contain 64 hexadecimal characters".into()));
-        }
     }
     let id = Uuid::new_v4().to_string();
     let expires = (Utc::now() + Duration::days(2)).to_rfc3339_opts(SecondsFormat::Millis, true);
