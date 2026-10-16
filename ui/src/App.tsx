@@ -145,6 +145,10 @@ export function App() {
   const [shareTarget, setShareTarget] = useState<Node | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
   const [newMenu, setNewMenu] = useState(false);
+  const [signedIn, setSignedIn] = useState(false);
+  useEffect(() => {
+    api.authStatus().then((status) => setSignedIn(status.authenticated)).catch(() => {});
+  }, []);
   const [sort, setSort] = useState<Sort>(loadSort);
   const searchInput = useRef<HTMLInputElement>(null);
 
@@ -223,25 +227,32 @@ export function App() {
   // A 401 means the server runs with a token this browser doesn't have yet.
   const asking = useRef(false);
   useEffect(() => {
-    const ask = () => {
+    const ask = async () => {
       if (asking.current) return;
       asking.current = true;
+      const passwordMode = await api.authStatus().then(() => true).catch(() => false);
       setDialog({
         kind: "prompt",
-        title: "Access token",
-        label: "This Drawer runs with DRAWER_TOKEN. Paste the token to continue; it is kept in this browser.",
+        title: passwordMode ? "Sign in to Drawer" : "Access token",
+        label: passwordMode
+          ? "Enter the administrator password. Drawer will use a private session cookie, not store your password in the browser."
+          : "This Drawer runs with DRAWER_TOKEN. Paste the token to continue; it is kept in this browser.",
         initial: "",
         action: "Continue",
         secret: true,
         submit: async (v) => {
-          setToken(v);
+          if (passwordMode) {
+            await api.login(v);
+            setSignedIn(true);
+          } else setToken(v);
           asking.current = false;
           await refresh();
         },
       });
     };
-    window.addEventListener(UNAUTHORIZED_EVENT, ask);
-    return () => window.removeEventListener(UNAUTHORIZED_EVENT, ask);
+    const onUnauthorized = () => { void ask(); };
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
   }, [refresh]);
 
   // Leaving the editor with unsaved text asks first.
@@ -546,6 +557,15 @@ export function App() {
             </kbd>
           )}
         </form>
+        {signedIn && (
+          <button type="button" className="btn" onClick={() => run(async () => {
+            await api.logout();
+            setSignedIn(false);
+            setNodes([]);
+            setFile(null);
+            window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+          })}>Sign out</button>
+        )}
       </header>
 
       <div className="body">
