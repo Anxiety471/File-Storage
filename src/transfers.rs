@@ -162,3 +162,27 @@ pub async fn cancel(
     }
     Ok(Json(json!({"ok":true})))
 }
+
+impl Drawer {
+    /// Remove abandoned staging files and metadata once their two-day lease expires.
+    pub async fn prune_expired_transfers(&self) -> Result<usize> {
+        let _guard = self.transfer_lock.lock().await;
+        let rows = sqlx::query("SELECT id FROM transfers WHERE expires_at <= ?")
+            .bind(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true))
+            .fetch_all(&self.pool).await?;
+        let mut cleaned = 0usize;
+        for row in rows {
+            let id: String = row.get("id");
+            if valid_id(&id).is_err() { continue; }
+            let part = partial_path(self, &id);
+            match tokio::fs::remove_file(part).await {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+            sqlx::query("DELETE FROM transfers WHERE id = ?").bind(&id).execute(&self.pool).await?;
+            cleaned += 1;
+        }
+        Ok(cleaned)
+    }
+}
