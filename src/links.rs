@@ -85,7 +85,7 @@ impl Drawer {
 
     /// No actor is trusted here. The only credential is the 64-character link secret.
     /// Trashing a file or any ancestor makes its links unusable until restored.
-    pub async fn read_download_link(&self, token: &str) -> Result<(String, Vec<u8>)> {
+    pub async fn download_link_file(&self, token: &str) -> Result<(String, i64, std::path::PathBuf)> {
         if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(Error::NotFound("download link".into()));
         }
@@ -106,7 +106,7 @@ impl Drawer {
         if live.id != id {
             return Err(Error::NotFound("download link".into()));
         }
-        let (_, bytes) = self.read(Ref::Path(&node.path), None).await?;
-        Ok((node.name, bytes))
+        let (rev, file_path) = self.read_file_path(Ref::Path(&node.path), None).await?;
+        Ok((node.name, rev.size, file_path))
     }
 }
