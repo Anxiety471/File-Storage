@@ -563,6 +563,17 @@ async fn resumable_upload_rejects_bad_offsets_and_assembles_file_without_losing_
 
     let download = send(&restarted, req("GET", "/drawer/v1/files?path=/work/report.bin", Body::empty())).await;
     assert_eq!(download.into_body().collect().await.unwrap().to_bytes(), "helloworld");
+    let partial = Request::get("/drawer/v1/files?path=/work/report.bin")
+        .header("authorization", "Bearer machine-secret")
+        .header("range", "bytes=2-5").body(Body::empty()).unwrap();
+    let range_result = send(&restarted, partial).await;
+    assert_eq!(range_result.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(range_result.headers()["content-range"], "bytes 2-5/10");
+    assert_eq!(range_result.into_body().collect().await.unwrap().to_bytes(), "llow");
+    let invalid_range = Request::get("/drawer/v1/files?path=/work/report.bin")
+        .header("authorization", "Bearer machine-secret")
+        .header("range", "bytes=500-900").body(Body::empty()).unwrap();
+    assert_eq!(send(&restarted, invalid_range).await.status(), StatusCode::RANGE_NOT_SATISFIABLE);
     let second = json_of(send(&restarted, req("POST", "/drawer/v1/transfers",
         Body::from(json!({"path":"/work/report.bin","size":3,"sha256":"0".repeat(64)}).to_string()))).await).await;
     let second_path = format!("/drawer/v1/transfers/{}", second["id"].as_str().unwrap());
