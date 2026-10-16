@@ -21,3 +21,31 @@ jobs:
           node-version: 22
       - run: npm ci && npm run build
         working-directory: ui
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate shell scripts and Compose
+        run: |
+          bash -n ops/backup.sh ops/restore.sh
+          cp .env.example .env
+          mkdir -p backups
+          docker compose config -q
+      - name: Build and start Ubuntu container
+        run: docker compose up -d --build
+      - name: Verify health and auth boundary
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8787/auth/me > /tmp/drawer-status.json; then break; fi
+            sleep 2
+          done
+          grep -q '"mode":"password"' /tmp/drawer-status.json
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/drawer/v1/tree?path=/)" = 401
+      - name: Container logs on failure
+        if: failure()
+        run: docker compose logs --no-color || true
+      - name: Tear down
+        if: always()
+        run: docker compose down
