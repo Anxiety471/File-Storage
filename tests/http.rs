@@ -535,6 +535,7 @@ async fn resumable_upload_rejects_bad_offsets_and_assembles_file_without_losing_
     let req = |method: &str, path: &str, body: Body| {
         Request::builder().method(method).uri(path)
             .header("authorization", "Bearer machine-secret")
+            .header("content-type", "application/json")
             .body(body).unwrap()
     };
     let created = json_of(send(&app, req("POST", "/drawer/v1/transfers",
