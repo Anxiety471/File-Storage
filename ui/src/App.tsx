@@ -419,7 +419,7 @@ export function App() {
     action: "Move",
     submit: async (folder) => {
       const target = folder.startsWith("/") ? folder : `/${folder}`;
-      for (const n of chosen) await api.move(n.id, join(target.replace(/\\/$/, "") || "/", n.name));
+      for (const n of chosen) await api.move(n.id, join((target.endsWith("/") ? target.slice(0, -1) || "/" : target), n.name));
       setSelected(new Set());
       await refresh();
     },
