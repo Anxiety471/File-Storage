@@ -40,7 +40,7 @@ pub struct Drawer {
     blobs: BlobStore,
     // Makes each check-then-write sequence one atomic step. Fine for the single-process server
     // this crate is; several processes sharing a store would need `BEGIN IMMEDIATE`.
-    write_lock: Arc<Mutex<()>>,
+    pub(crate) write_lock: Arc<Mutex<()>>,
 }
 
 /// How a caller names a node: by path (`/notes/todo.md`) or by its stable id.
@@ -791,6 +791,17 @@ impl Drawer {
         let rev = self.revision_row(&node.id, revision).await?;
         let data = self.blobs.get(&rev.hash).await?;
         Ok((rev, data))
+    }
+
+    /// Resolve a file revision to its content-addressed on-disk path for streamed HTTP downloads.
+    pub async fn read_file_path(&self, r: Ref<'_>, revision: Option<i64>) -> Result<(Revision, std::path::PathBuf)> {
+        let node = self.resolve(r).await?;
+        let rev = self.revision_row(&node.id, revision).await?;
+        let path = self.blobs.path_for(&rev.hash)?;
+        if !tokio::fs::try_exists(&path).await? {
+            return Err(Error::Internal(format!("blob {} missing", rev.hash)));
+        }
+        Ok((rev, path))
     }
 
     async fn revision_row(&self, node_id: &str, revision: Option<i64>) -> Result<Revision> {

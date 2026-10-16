@@ -482,3 +482,16 @@ async fn public_download_links_are_expiring_revocable_and_download_only() {
     assert_eq!(send(&app, get(&format!("/s/{second_token}"))).await.status(), StatusCode::NOT_FOUND);
     pool.close().await;
 }
+
+#[tokio::test]
+async fn download_link_follows_identity_when_its_old_path_is_reused() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = Drawer::open(dir.path()).await.unwrap();
+    let saved = svc.write("/shared.txt", b"shared", drawer::service::WriteOpts::new("owner", "")).await.unwrap();
+    let link = svc.create_download_link(&saved.node.id, "owner", 7).await.unwrap();
+    svc.move_to(drawer::service::Ref::Id(&saved.node.id), "/moved.txt", "owner").await.unwrap();
+    svc.write("/shared.txt", b"private replacement", drawer::service::WriteOpts::new("owner", "")).await.unwrap();
+    let (name, _, bytes) = svc.download_link_file(&link.token).await.unwrap();
+    assert_eq!(name, "moved.txt");
+    assert_eq!(tokio::fs::read(bytes).await.unwrap(), b"shared");
+}
