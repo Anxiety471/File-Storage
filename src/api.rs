@@ -396,8 +396,10 @@ async fn revoke_link(
 /// The one unauthenticated endpoint, gated by an unguessable, expiring capability.
 /// Always download as an attachment: user-provided HTML/SVG must never execute.
 pub async fn download_shared(State(s): State<Drawer>, Path(token): Path<String>) -> Result<Response> {
-    let (name, data) = s.read_download_link(&token).await?;
-    let mut resp = data.into_response();
+    let (name, size, file_path) = s.download_link_file(&token).await?;
+    let file = tokio::fs::File::open(file_path).await?;
+    let mut resp = Body::from_stream(ReaderStream::new(file)).into_response();
+    resp.headers_mut().insert(header::CONTENT_LENGTH, HeaderValue::from(size.max(0) as u64));
     let h = resp.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
     h.insert(
