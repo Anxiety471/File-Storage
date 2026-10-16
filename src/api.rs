@@ -110,6 +110,11 @@ struct ShareBody {
 }
 
 #[derive(Deserialize)]
+struct LinkBody {
+    expires_in_days: Option<i64>,
+}
+
+#[derive(Deserialize)]
 struct SearchQ {
     q: String,
     limit: Option<usize>,
@@ -135,6 +140,8 @@ pub fn router() -> Router<Drawer> {
         .route("/copy", post(copy))
         .route("/move", post(move_to))
         .route("/nodes/{id}", axum::routing::patch(update_node).delete(purge_node))
+        .route("/nodes/{id}/links", get(list_links).post(create_link))
+        .route("/nodes/{id}/links/{link_id}", axum::routing::delete(revoke_link))
         .route("/nodes/{id}/permissions", get(list_permissions).put(share))
         .route("/nodes/{id}/permissions/{principal}", axum::routing::delete(unshare))
         .route("/trash", get(trash))
@@ -315,6 +322,48 @@ async fn update_node(
 async fn purge_node(State(s): State<Drawer>, Path(id): Path<String>, headers: HeaderMap) -> Result<Json<Value>> {
     s.purge(&id, &actor(&headers)).await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// Create a 1-30 day download-only link for a file. The token is returned only once.
+async fn create_link(
+    State(s): State<Drawer>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<LinkBody>,
+) -> Result<Json<Value>> {
+    Ok(out(s.create_download_link(&id, &actor(&headers), body.expires_in_days.unwrap_or(7)).await?))
+}
+
+async fn list_links(State(s): State<Drawer>, Path(id): Path<String>, headers: HeaderMap) -> Result<Json<Value>> {
+    Ok(Json(json!({ "links": s.list_download_links(&id, &actor(&headers)).await? })))
+}
+
+async fn revoke_link(
+    State(s): State<Drawer>,
+    Path((id, link_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<Value>> {
+    s.revoke_download_link(&id, &link_id, &actor(&headers)).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// The one unauthenticated endpoint, gated by an unguessable, expiring capability.
+/// Always download as an attachment: user-provided HTML/SVG must never execute.
+pub async fn download_shared(State(s): State<Drawer>, Path(token): Path<String>) -> Result<Response> {
+    let (name, data) = s.read_download_link(&token).await?;
+    let mut resp = data.into_response();
+    let h = resp.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
+    h.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!("attachment; filename*=UTF-8''{}", encode_filename(&name)))
+            .expect("percent-encoded filename is ascii"),
+    );
+    h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("sandbox; default-src 'none'"));
+    Ok(resp)
 }
 
 async fn list_permissions(State(s): State<Drawer>, Path(id): Path<String>) -> Result<Json<Value>> {
