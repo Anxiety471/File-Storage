@@ -4,13 +4,15 @@
 //! `x-drawer-author` header (`api` by default).
 use axum::{
     Json, Router,
-    body::Bytes,
+    body::{Body, Bytes},
     extract::{Path, Query, State},
     http::{HeaderMap, HeaderName, HeaderValue, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio_util::io::ReaderStream;
 use serde_json::{Value, json};
 
 use crate::error::{Error, Result};
@@ -236,9 +238,23 @@ async fn mkdir(State(s): State<Drawer>, headers: HeaderMap, Json(b): Json<PathBo
     Ok(out(s.mkdir(&b.path, &actor(&headers)).await?))
 }
 
+/// Parse one RFC 7233 bytes range. Multi-ranges are intentionally unsupported.
+fn one_range(input: &str, total: u64) -> Option<(u64, u64)> {
+    let (a, b) = input.strip_prefix("bytes=")?.split_once('-')?;
+    if b.contains(',') || total == 0 { return None; }
+    if a.is_empty() {
+        let suffix: u64 = b.parse().ok()?;
+        if suffix == 0 { return None; }
+        return Some((total.saturating_sub(suffix), total - 1));
+    }
+    let start: u64 = a.parse().ok()?;
+    let end: u64 = if b.is_empty() { total - 1 } else { b.parse::<u64>().ok()?.min(total - 1) };
+    (start <= end && start < total).then_some((start, end))
+}
+
 async fn read_file(State(s): State<Drawer>, Query(q): Query<PathQ>, req: HeaderMap) -> Result<Response> {
     let name = s.stat(target(&q)?).await?.name;
-    let (rev, data) = s.read(target(&q)?, q.revision).await?;
+    let (rev, file_path) = s.read_file_path(target(&q)?, q.revision).await?;
     // Content is addressed by hash, so the hash is a perfect validator: a client that already
     // has these bytes gets a 304 and no body.
     let etag = format!("\"{}\"", rev.hash);
@@ -248,8 +264,35 @@ async fn read_file(State(s): State<Drawer>, Query(q): Query<PathQ>, req: HeaderM
         resp.headers_mut().insert("x-drawer-revision", HeaderValue::from(rev.revision));
         return Ok(resp);
     }
-    let mut resp = data.into_response();
+    let total = rev.size.max(0) as u64;
+    let range = if let Some(value) = req.get(header::RANGE) {
+        match value.to_str().ok().and_then(|s| one_range(s, total)) {
+            Some(r) => Some(r),
+            None => {
+                let mut response = axum::http::StatusCode::RANGE_NOT_SATISFIABLE.into_response();
+                response.headers_mut().insert(header::CONTENT_RANGE,
+                    HeaderValue::from_str(&format!("bytes */{total}")).expect("numeric header"));
+                return Ok(response);
+            }
+        }
+    } else { None };
+    let mut file = tokio::fs::File::open(file_path).await?;
+    let (start, end) = range.unwrap_or((0, total.saturating_sub(1)));
+    if start != 0 {
+        file.seek(std::io::SeekFrom::Start(start)).await?;
+    }
+    let count = if total == 0 { 0 } else { end - start + 1 };
+    let mut resp = Body::from_stream(ReaderStream::new(file.take(count))).into_response();
+    if range.is_some() {
+        *resp.status_mut() = axum::http::StatusCode::PARTIAL_CONTENT;
+    }
     let h = resp.headers_mut();
+    h.insert(header::CONTENT_LENGTH, HeaderValue::from(count));
+    h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    if range.is_some() {
+        h.insert(header::CONTENT_RANGE,
+            HeaderValue::from_str(&format!("bytes {start}-{end}/{total}")).expect("numeric header"));
+    }
     if let Ok(v) = HeaderValue::from_str(&rev.mime) {
         h.insert(header::CONTENT_TYPE, v);
     }
