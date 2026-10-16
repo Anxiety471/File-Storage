@@ -114,18 +114,7 @@ pub fn install(cfg: &Config, tag: &str, exe: &Path) -> Result<()> {
     }
     let bundle = unpacked.join(format!("drawer-{target}"));
 
-    replace_binary(&bundle.join("drawer"), exe)?;
-    // The UI sits beside the binary at ../share/drawer/ui, as install.sh lays it out. Only
-    // refresh it where it is already installed, so a binary built by hand gets no new folders.
-    let ui = exe
-        .parent()
-        .and_then(Path::parent)
-        .map(|p| p.join("share/drawer/ui"));
-    if let Some(ui) = ui.filter(|p| p.is_dir())
-        && bundle.join("ui").is_dir()
-    {
-        replace_ui(&bundle.join("ui"), &ui)?;
-    }
+    replace_install(&bundle, exe)?;
     Ok(())
 }
 
@@ -189,6 +178,8 @@ fn fetch(url: &str, dest: &Path) -> Result<bool> {
     let out = Command::new("curl")
         .args([
             "-sSL",
+            "--connect-timeout", "15",
+            "--max-time", "600",
             "-H",
             "Accept: application/vnd.github+json",
             "-H",
@@ -230,45 +221,42 @@ fn verify(archive: &Path, name: &str, sums: &str) -> Result<()> {
     Ok(())
 }
 
-/// Copy the new binary beside the old one, then rename it over the old one. The rename is
-/// atomic, and `fs::copy` keeps the archive's executable bit.
-fn replace_binary(new: &Path, exe: &Path) -> Result<()> {
-    let dir = exe
-        .parent()
-        .ok_or_else(|| anyhow!("{} has no parent directory", exe.display()))?;
-    let staged = dir.join(format!(".drawer-update-{}", uuid::Uuid::new_v4()));
-    fs::copy(new, &staged).with_context(|| {
-        format!(
-            "cannot write to {}; run the update as a user who can write there",
-            dir.display()
-        )
-    })?;
-    if let Err(err) = fs::rename(&staged, exe) {
-        let _ = fs::remove_file(&staged);
-        return Err(err).with_context(|| format!("cannot replace {}", exe.display()));
-    }
-    Ok(())
-}
-
-/// Swap the UI folder the same way: stage the new copy, move the old one aside, then rename
-/// the new one into place. If that last rename fails, the old UI goes back.
-fn replace_ui(new: &Path, ui: &Path) -> Result<()> {
-    let staged = ui.with_file_name("ui.new");
-    let old = ui.with_file_name("ui.old");
-    let _ = fs::remove_dir_all(&staged);
-    let _ = fs::remove_dir_all(&old);
-    if let Err(err) = copy_dir(new, &staged) {
-        let _ = fs::remove_dir_all(&staged);
-        return Err(err).context("cannot stage the new web UI");
-    }
-    fs::rename(ui, &old).context("cannot move the old web UI aside")?;
-    if let Err(err) = fs::rename(&staged, ui) {
-        let _ = fs::rename(&old, ui);
-        let _ = fs::remove_dir_all(&staged);
-        return Err(err).context("cannot install the new web UI");
-    }
-    let _ = fs::remove_dir_all(&old);
-    Ok(())
+/// Stage both artifacts before touching the install. Keep the old UI until the binary
+/// rename succeeds, and restore it if the final commit fails. Unique sibling paths avoid
+/// deleting unrelated ui.new/ui.old directories left by an operator or another process.
+fn replace_install(bundle: &Path, exe: &Path) -> Result<()> {
+    let dir = exe.parent().ok_or_else(|| anyhow!("binary has no parent directory"))?;
+    let id = uuid::Uuid::new_v4();
+    let binary = dir.join(format!(".drawer-update-{id}"));
+    let ui = dir.parent().map(|p| p.join("share/drawer/ui")).filter(|p| p.is_dir());
+    let staged_ui = ui.as_ref().map(|p| p.with_file_name(format!(".ui-new-{id}")));
+    let old_ui = ui.as_ref().map(|p| p.with_file_name(format!(".ui-old-{id}")));
+    let result = (|| -> Result<()> {
+        fs::copy(bundle.join("drawer"), &binary).context("cannot stage the new binary")?;
+        if let (Some(ui), Some(staged), Some(old)) = (&ui, &staged_ui, &old_ui) {
+            if !bundle.join("ui/index.html").is_file() {
+                bail!("release is missing the web UI; install was left unchanged");
+            }
+            copy_dir(&bundle.join("ui"), staged).context("cannot stage the new web UI")?;
+            fs::rename(ui, old).context("cannot move the old web UI aside")?;
+            if let Err(err) = fs::rename(staged, ui) {
+                fs::rename(old, ui).context("cannot restore the old web UI")?;
+                return Err(err).context("cannot install the new web UI");
+            }
+        }
+        if let Err(err) = fs::rename(&binary, exe) {
+            if let (Some(ui), Some(old)) = (&ui, &old_ui) {
+                fs::remove_dir_all(ui).context("cannot remove the staged web UI during rollback")?;
+                fs::rename(old, ui).context("cannot restore the old web UI")?;
+            }
+            return Err(err).context("cannot replace the binary");
+        }
+        if let Some(old) = &old_ui { let _ = fs::remove_dir_all(old); }
+        Ok(())
+    })();
+    let _ = fs::remove_file(&binary);
+    if let Some(staged) = staged_ui { let _ = fs::remove_dir_all(staged); }
+    result
 }
 
 fn copy_dir(from: &Path, to: &Path) -> Result<()> {
@@ -363,36 +351,38 @@ mod tests {
     }
 
     #[test]
-    fn binary_is_replaced_in_place() {
+    fn incomplete_bundle_leaves_both_artifacts_unchanged() {
         let dir = tempfile::tempdir().unwrap();
-        let exe = dir.path().join("drawer");
-        let new = dir.path().join("new-drawer");
-        fs::write(&exe, b"old").unwrap();
-        fs::write(&new, b"new").unwrap();
-        replace_binary(&new, &exe).unwrap();
-        assert_eq!(fs::read(&exe).unwrap(), b"new");
-        let leftovers: Vec<_> = fs::read_dir(dir.path())
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .collect();
-        assert_eq!(leftovers.len(), 2, "{leftovers:?}");
+        let exe = dir.path().join("bin/drawer");
+        let ui = dir.path().join("share/drawer/ui");
+        let bundle = dir.path().join("bundle");
+        fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        fs::create_dir_all(&ui).unwrap();
+        fs::create_dir_all(&bundle).unwrap();
+        fs::write(&exe, b"old binary").unwrap();
+        fs::write(ui.join("index.html"), b"old ui").unwrap();
+        fs::write(bundle.join("drawer"), b"new binary").unwrap();
+        assert!(replace_install(&bundle, &exe).is_err());
+        assert_eq!(fs::read(&exe).unwrap(), b"old binary");
+        assert_eq!(fs::read(ui.join("index.html")).unwrap(), b"old ui");
+        assert_eq!(fs::read_dir(exe.parent().unwrap()).unwrap().count(), 1);
     }
 
     #[test]
-    fn ui_folder_is_swapped_without_leftovers() {
+    fn binary_commit_failure_restores_the_old_ui() {
         let dir = tempfile::tempdir().unwrap();
-        let ui = dir.path().join("ui");
-        let new = dir.path().join("new-ui/assets");
-        fs::create_dir_all(ui.join("assets")).unwrap();
-        fs::write(ui.join("index.html"), b"old").unwrap();
-        fs::create_dir_all(&new).unwrap();
-        fs::write(dir.path().join("new-ui/index.html"), b"new").unwrap();
-        fs::write(new.join("app.js"), b"js").unwrap();
-
-        replace_ui(&dir.path().join("new-ui"), &ui).unwrap();
-        assert_eq!(fs::read(ui.join("index.html")).unwrap(), b"new");
-        assert_eq!(fs::read(ui.join("assets/app.js")).unwrap(), b"js");
-        assert!(!dir.path().join("ui.old").exists());
-        assert!(!dir.path().join("ui.new").exists());
+        // A directory cannot be replaced by the staged binary's rename.
+        let exe = dir.path().join("bin/drawer");
+        let ui = dir.path().join("share/drawer/ui");
+        let bundle = dir.path().join("bundle");
+        fs::create_dir_all(&exe).unwrap();
+        fs::create_dir_all(&ui).unwrap();
+        fs::create_dir_all(bundle.join("ui")).unwrap();
+        fs::write(ui.join("index.html"), b"old ui").unwrap();
+        fs::write(bundle.join("drawer"), b"new binary").unwrap();
+        fs::write(bundle.join("ui/index.html"), b"new ui").unwrap();
+        assert!(replace_install(&bundle, &exe).is_err());
+        assert_eq!(fs::read(ui.join("index.html")).unwrap(), b"old ui");
+        assert!(exe.is_dir());
     }
 }
