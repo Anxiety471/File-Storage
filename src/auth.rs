@@ -57,10 +57,9 @@ impl AuthGate {
     }
 
     pub async fn authenticated(&self, headers: &HeaderMap) -> bool {
-        if let Some(expected) = &self.api_token {
-            if token(headers).is_some_and(|candidate| equal(candidate.as_bytes(), expected.as_bytes())) {
+        if let Some(expected) = &self.api_token
+            && token(headers).is_some_and(|candidate| equal(candidate.as_bytes(), expected.as_bytes())) {
                 return true;
-            }
         }
         let Some(secret) = cookie(headers) else { return false };
         let mut sessions = self.sessions.lock().await;
