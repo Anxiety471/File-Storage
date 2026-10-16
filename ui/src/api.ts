@@ -57,6 +57,16 @@ export interface SearchHit {
   line?: number;
 }
 
+export interface DownloadLink {
+  id: string;
+  created_at: string;
+  expires_at: string;
+}
+
+export interface CreatedDownloadLink extends DownloadLink {
+  token: string;
+}
+
 export interface Diff {
   path: string;
   from: number;
@@ -87,6 +97,7 @@ export function setToken(token: string) {
     // storage blocked: the token lasts until reload
   }
   memoryToken = token || null;
+  if (token) window.dispatchEvent(new Event(AUTHENTICATED_EVENT));
 }
 let memoryToken: string | null = null;
 
@@ -98,6 +109,7 @@ function headers(extra: Record<string, string> = {}): Record<string, string> {
 
 /** Fired on a 401 so the app can ask for the token. */
 export const UNAUTHORIZED_EVENT = "drawer:unauthorized";
+export const AUTHENTICATED_EVENT = "drawer:authenticated";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -124,6 +136,12 @@ const json = (method: string, body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
+export interface AuthStatus {
+  mode: "password";
+  authenticated: boolean;
+  user: string | null;
+}
+
 export const api = {
   /** Is a newer release published than the one this server runs? */
   async updateCheck(): Promise<UpdateStatus> {
@@ -134,6 +152,23 @@ export const api = {
   async updateInstall(): Promise<UpdateResult> {
     const r = await check(await fetch(`${BASE}/update`, { method: "POST", headers: headers() }));
     return r.json();
+  },
+  async authStatus(): Promise<AuthStatus> {
+    const response = await fetch("/auth/me", { credentials: "same-origin" });
+    if (!response.ok) throw new ApiError(response.status, "Password authentication is not configured");
+    return response.json();
+  },
+  async login(password: string): Promise<void> {
+    const response = await fetch("/auth/login", {
+      method: "POST", credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    if (!response.ok) throw new ApiError(response.status, "Incorrect administrator password");
+    window.dispatchEvent(new Event(AUTHENTICATED_EVENT));
+  },
+  async logout(): Promise<void> {
+    await check(await fetch("/auth/logout", { method: "POST", credentials: "same-origin" }));
   },
   async tree(path: string): Promise<Node[]> {
     const r = await check(await fetch(`${BASE}/tree?${q(path)}`, { headers: headers() }));
@@ -159,6 +194,18 @@ export const api = {
   },
   // Saves the file through the browser's download prompt.
   async download(path: string, revision?: number): Promise<void> {
+    // The browser's native download manager streams files without buffering multi-GB
+    // content in JavaScript memory. HttpOnly sessions travel with same-origin requests.
+    const status = await api.authStatus().catch(() => null);
+    if (status?.authenticated) {
+      const extra = (revision ? `&revision=${revision}` : "") + "&download=true";
+      const a = document.createElement("a");
+      a.href = `${BASE}/files?${q(path, extra)}`;
+      a.download = path.split("/").pop() || "download";
+      a.click();
+      return;
+    }
+    // Legacy DRAWER_TOKEN mode needs an Authorization header and therefore a fetch/blob.
     const blob = await api.readBlob(path, revision, true);
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -182,6 +229,57 @@ export const api = {
       }),
     );
     return r.json();
+  },
+  /** Upload in 4 MiB chunks; restart the same selected File to resume a failed transfer. */
+  async upload(
+    path: string,
+    file: File,
+    onProgress: (done: number, total: number) => void,
+    signal?: AbortSignal,
+  ): Promise<WriteOutcome> {
+    const key = `drawer:transfer:${path}:${file.size}:${file.lastModified}`;
+    const opts = { headers: headers() };
+    let id: string | null = null;
+    try { id = localStorage.getItem(key); } catch { /* Storage may be blocked. */ }
+    let offset = 0;
+    if (id) {
+      try {
+        const r = await check(await fetch(`${BASE}/transfers/${encodeURIComponent(id)}`, opts));
+        const state: { received: number; size: number; path: string } = await r.json();
+        if (state.size !== file.size || state.path !== path) throw new Error("Upload changed");
+        offset = state.received;
+      } catch {
+        try { localStorage.removeItem(key); } catch { /* Optional resume cache. */ }
+        id = null;
+      }
+    }
+    if (!id) {
+      const r = await check(await fetch(`${BASE}/transfers`, json("POST", { path, size: file.size })));
+      const state: { id: string } = await r.json();
+      id = state.id;
+      try { localStorage.setItem(key, id); } catch { /* Uploads still work without resume caching. */ }
+    }
+    onProgress(offset, file.size);
+    while (offset < file.size) {
+      if (signal?.aborted) throw new DOMException("Upload paused", "AbortError");
+      const chunk = file.slice(offset, Math.min(offset + 4 * 1024 * 1024, file.size));
+      const r = await check(await fetch(`${BASE}/transfers/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        headers: headers({ "x-upload-offset": String(offset) }),
+        body: chunk,
+        signal,
+      }));
+      const state: { received: number } = await r.json();
+      if (state.received <= offset) throw new Error("Transfer made no progress");
+      offset = state.received;
+      onProgress(offset, file.size);
+    }
+    const r = await check(await fetch(`${BASE}/transfers/${encodeURIComponent(id)}/complete`, {
+      method: "POST", headers: headers(), signal,
+    }));
+    const outcome: WriteOutcome = await r.json();
+    try { localStorage.removeItem(key); } catch { /* Optional resume cache. */ }
+    return outcome;
   },
   // Moves the file to the trash. Restore it from the Trash view.
   async trash(path: string): Promise<void> {
@@ -235,6 +333,17 @@ export const api = {
   async copy(id: string, to: string): Promise<WriteOutcome> {
     const r = await check(await fetch(`${BASE}/copy`, json("POST", { from_id: id, to, author: "ui", if_head_revision: 0 })));
     return r.json();
+  },
+  async links(id: string): Promise<DownloadLink[]> {
+    const r = await check(await fetch(`${BASE}/nodes/${encodeURIComponent(id)}/links`, { headers: headers() }));
+    return (await r.json()).links;
+  },
+  async createLink(id: string, days = 7): Promise<CreatedDownloadLink> {
+    const r = await check(await fetch(`${BASE}/nodes/${encodeURIComponent(id)}/links`, json("POST", { expires_in_days: days })));
+    return r.json();
+  },
+  async revokeLink(id: string, linkId: string): Promise<void> {
+    await check(await fetch(`${BASE}/nodes/${encodeURIComponent(id)}/links/${encodeURIComponent(linkId)}`, { method: "DELETE", headers: headers() }));
   },
   async trashed(): Promise<Node[]> {
     const r = await check(await fetch(`${BASE}/trash`, { headers: headers() }));

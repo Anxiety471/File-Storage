@@ -322,6 +322,17 @@ tr:hover .row-actions, tr.menu-open .row-actions, .row-actions:focus-within { op
 .modal input:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 
+/* Download-link management */
+.share-modal { max-width: 520px; max-height: min(85vh, 700px); overflow-y: auto; }
+.share-modal h4 { font-size: 14px; margin: 20px 0 8px; font-weight: 600; }
+.share-created { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
+.share-copy-row { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.share-copy-row input { min-width: 0; flex: 1; font-size: 13px; }
+.share-links { list-style: none; padding: 0; margin: 0; }
+.share-links li { display: flex; gap: 8px; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.share-links .btn { flex-shrink: 0; }
+@media (max-width: 450px) { .share-copy-row { flex-wrap: wrap; } .share-copy-row input { flex-basis: 100%; } }
+
 /* Toast */
 .toast { position: fixed; left: 24px; bottom: 24px; z-index: 30; max-width: min(520px, calc(100vw - 48px)); display: flex; align-items: center; gap: 16px; padding: 12px 12px 12px 20px; min-height: 48px; border-radius: 8px; background: #303134; color: #f1f3f4; box-shadow: var(--shadow); animation: rise .18s ease-out; }
 .toast.error { background: var(--danger); color: #fff; }
@@ -344,3 +355,15 @@ tr:hover .row-actions, tr.menu-open .row-actions, .row-actions:focus-within { op
   .history { display: none; }
   .row-actions { opacity: 1; }
 }
+
+/* Transfer progress and small-screen controls */
+.transfer-progress {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+  border-bottom: 1px solid var(--line); padding: 12px 16px;
+}
+.transfer-label { min-width: 160px; flex: 1; overflow-wrap: anywhere; }
+.transfer-progress progress { flex: 1; height: 10px; min-width: 100px; accent-color: var(--accent); }
+.bulk-bar { display: flex; align-items: center; gap: 8px; padding: 8px 16px; flex-wrap: wrap; }
+.bulk-bar .btn { flex-shrink: 0; }
+.files .col-select { width: 40px; text-align: center; }
+.files .col-select input { width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent); }

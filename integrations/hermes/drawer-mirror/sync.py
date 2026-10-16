@@ -23,8 +23,9 @@ environment first, then $HERMES_HOME/.env, so edits apply without a restart.
 that were only *mentioned* in tool output (system files, configs, ...), which
 is not the same as files Hermes produced, so the scan only considers files
 under the scan roots (DRAWER_SYNC_ROOTS, default ~/.hermes) and skips symlinks,
-secret names (auth.json, .env, *.pem, ...), databases (*.db*), bytecode,
-dependency/cache directories and files over DRAWER_MIRROR_MAX_BYTES.
+secret names (auth.json, .env, *.pem, ...), Hermes' own configuration and
+runtime logs, databases (*.db*), bytecode, dependency/cache directories and
+files over DRAWER_MIRROR_MAX_BYTES.
 
 The scan is idempotent: re-running only uploads what is new or changed, and
 links are deduplicated against /hermes/links.md.
@@ -104,6 +105,11 @@ def _skip_reason(path: Path) -> str | None:
     name = path.name
     if name in {"config.yaml", "profile.yaml"} and path.is_relative_to(HERMES_HOME):
         return "Hermes configuration"
+    if "logs" in path.parts and path.is_relative_to(HERMES_HOME):
+        # Runtime logs grow on every agent turn, so mirroring one stores a full
+        # copy per scan as a new revision (agent.log alone reached 406 MB of
+        # history). They are not artifacts; they stay local.
+        return "Hermes runtime log"
     if name in SECRET_NAMES:
         return "secret file"
     if name.endswith(SECRET_SUFFIXES):

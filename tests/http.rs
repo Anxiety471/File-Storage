@@ -398,3 +398,261 @@ async fn etags_recent_diff_and_edit_over_rest() {
     let tree = json_of(send(&app, get("/drawer/v1/tree?path=/&depth=3")).await).await;
     assert_eq!(tree["truncated"], false);
 }
+
+#[tokio::test]
+async fn public_download_links_are_expiring_revocable_and_download_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = drawer::app(Drawer::open(dir.path()).await.unwrap(), Some("master-secret".into()), None);
+
+    let upload = |body: &'static str| {
+        Request::put("/drawer/v1/files?path=/docs/report.txt")
+            .header("authorization", "Bearer master-secret")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    let first = json_of(send(&app, upload("first revision")).await).await;
+    let id = first["node"]["id"].as_str().unwrap();
+    let folder_id = json_of(send(&app, Request::get("/drawer/v1/files/meta?path=/docs")
+        .header("authorization", "Bearer master-secret").body(Body::empty()).unwrap()).await)
+        .await["id"].as_str().unwrap().to_string();
+
+    // No unauthenticated way to mint or revoke a link, or access other API routes.
+    let create = |days: i64, authed: bool| {
+        let mut req = Request::post(format!("/drawer/v1/nodes/{id}/links"))
+            .header("content-type", "application/json");
+        if authed { req = req.header("authorization", "Bearer master-secret"); }
+        req.body(Body::from(json!({"expires_in_days": days}).to_string())).unwrap()
+    };
+    assert_eq!(send(&app, create(7, false)).await.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(send(&app, create(31, true)).await.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(send(&app, get("/drawer/v1/tree?path=/")).await.status(), StatusCode::UNAUTHORIZED);
+
+    let made = json_of(send(&app, create(7, true)).await).await;
+    let token = made["token"].as_str().unwrap().to_string();
+    assert_eq!(token.len(), 64);
+    let link_id = made["id"].as_str().unwrap().to_string();
+    let public_path = format!("/s/{token}");
+    let download = send(&app, get(&public_path)).await;
+    assert_eq!(download.status(), StatusCode::OK);
+    assert!(download.headers()["content-disposition"].to_str().unwrap().starts_with("attachment;"));
+    assert_eq!(download.headers()["x-content-type-options"], "nosniff");
+    assert_eq!(download.headers()["cache-control"], "no-store");
+    assert_eq!(download.into_body().collect().await.unwrap().to_bytes(), "first revision");
+
+    let fake = format!("/s/{}", "a".repeat(64));
+    assert_eq!(send(&app, get(&fake)).await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(send(&app, Request::post(&public_path).body(Body::empty()).unwrap()).await.status(), StatusCode::UNAUTHORIZED);
+
+    // A link follows the latest file version, while its opaque token never appears in listings.
+    assert_eq!(send(&app, upload("updated revision")).await.status(), StatusCode::OK);
+    assert_eq!(
+        send(&app, get(&public_path)).await.into_body().collect().await.unwrap().to_bytes(),
+        "updated revision"
+    );
+    let listed = json_of(send(&app, Request::get(format!("/drawer/v1/nodes/{id}/links"))
+        .header("authorization", "Bearer master-secret").body(Body::empty()).unwrap()).await).await;
+    assert_eq!(listed["links"].as_array().unwrap().len(), 1);
+    assert!(listed["links"][0].get("token").is_none());
+
+    // Trashing a parent folder disables the link; restoring it re-enables access.
+    let folder_path = format!("/drawer/v1/nodes/{folder_id}");
+    let change_folder = |trashed: bool| Request::patch(&folder_path)
+        .header("authorization", "Bearer master-secret")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"trashed":trashed}).to_string())).unwrap();
+    assert_eq!(send(&app, change_folder(true)).await.status(), StatusCode::OK);
+    assert_eq!(send(&app, get(&public_path)).await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(send(&app, change_folder(false)).await.status(), StatusCode::OK);
+    assert_eq!(send(&app, get(&public_path)).await.status(), StatusCode::OK);
+
+    // Revocation takes effect immediately.
+    let revoke = Request::delete(format!("/drawer/v1/nodes/{id}/links/{link_id}"))
+        .header("authorization", "Bearer master-secret").body(Body::empty()).unwrap();
+    assert_eq!(send(&app, revoke).await.status(), StatusCode::OK);
+    assert_eq!(send(&app, get(&public_path)).await.status(), StatusCode::NOT_FOUND);
+
+    // Expiration is enforced from the database on every request.
+    let another = json_of(send(&app, create(1, true)).await).await;
+    let second_token = another["token"].as_str().unwrap().to_string();
+    let pool = sqlx::SqlitePool::connect_with(
+        sqlx::sqlite::SqliteConnectOptions::new().filename(dir.path().join("drawer.db")),
+    ).await.unwrap();
+    sqlx::query("UPDATE download_links SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?")
+        .bind(another["id"].as_str().unwrap()).execute(&pool).await.unwrap();
+    assert_eq!(send(&app, get(&format!("/s/{second_token}"))).await.status(), StatusCode::NOT_FOUND);
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn password_session_authenticates_browser_and_prevents_author_spoofing() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = drawer::app_with_auth(
+        Drawer::open(dir.path()).await.unwrap(),
+        Some("machine-secret".into()),
+        None, Some("strong-admin-password".into()), false,
+    );
+    assert_eq!(send(&app, get("/drawer/v1/tree?path=/")).await.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(send(&app, get("/auth/me")).await.status(), StatusCode::OK);
+    let denied = send(&app, json_post("/auth/login", json!({"password":"wrong"}))).await;
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+
+    let login = send(&app, json_post("/auth/login", json!({"password":"strong-admin-password"}))).await;
+    assert_eq!(login.status(), StatusCode::OK);
+    let set_cookie = login.headers()["set-cookie"].to_str().unwrap().to_string();
+    assert!(set_cookie.contains("HttpOnly"));
+    assert!(set_cookie.contains("SameSite=Strict"));
+    let cookie = set_cookie.split(';').next().unwrap().to_string();
+
+    let put = Request::put("/drawer/v1/files?path=/private.txt")
+        .header("cookie", &cookie)
+        .header("x-drawer-author", "someone-else")
+        .body(Body::from("secret")).unwrap();
+    let saved = json_of(send(&app, put).await).await;
+    assert_eq!(saved["node"]["owner"], "admin");
+    assert_eq!(saved["node"]["modified_by"], "admin");
+    assert_eq!(send(&app, get("/drawer/v1/files?path=/private.txt")).await.status(), StatusCode::UNAUTHORIZED);
+
+    let authed = Request::get("/drawer/v1/files?path=/private.txt")
+        .header("cookie", &cookie).body(Body::empty()).unwrap();
+    assert_eq!(send(&app, authed).await.status(), StatusCode::OK);
+    // JSON author fields must follow the verified identity just like headers do.
+    for (endpoint, body) in [
+        ("edit", json!({"path":"/private.txt", "old_string":"secret", "new_string":"edited", "author":"impostor"})),
+        ("rollback", json!({"path":"/private.txt", "revision":1, "author":"impostor"})),
+        ("copy", json!({"from":"/private.txt", "to":"/copied.txt", "author":"impostor"})),
+    ] {
+        let request = Request::post(format!("/drawer/v1/{endpoint}"))
+            .header("cookie", &cookie).header("content-type", "application/json")
+            .body(Body::from(body.to_string())).unwrap();
+        let response = send(&app, request).await;
+        assert_eq!(response.status(), StatusCode::OK, "{endpoint}");
+        let saved = json_of(response).await;
+        assert_eq!(saved["node"]["modified_by"], "admin", "{endpoint}");
+    }
+    let logout = Request::post("/auth/logout").header("cookie", &cookie).body(Body::empty()).unwrap();
+    assert_eq!(send(&app, logout).await.status(), StatusCode::NO_CONTENT);
+    let expired = Request::get("/drawer/v1/tree?path=/").header("cookie", cookie).body(Body::empty()).unwrap();
+    assert_eq!(send(&app, expired).await.status(), StatusCode::UNAUTHORIZED);
+
+    let token_user = Request::get("/drawer/v1/tree?path=/")
+        .header("authorization", "Bearer machine-secret").body(Body::empty()).unwrap();
+    assert_eq!(send(&app, token_user).await.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn resumable_upload_rejects_bad_offsets_and_assembles_file_without_losing_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = drawer::app_with_auth(
+        Drawer::open(dir.path()).await.unwrap(),
+        Some("machine-secret".into()), None, Some("admin-password".into()), false,
+    );
+    let req = |method: &str, path: &str, body: Body| {
+        Request::builder().method(method).uri(path)
+            .header("authorization", "Bearer machine-secret")
+            .header("content-type", "application/json")
+            .body(body).unwrap()
+    };
+    let created = json_of(send(&app, req("POST", "/drawer/v1/transfers",
+        Body::from(json!({"path":"/work/report.bin", "size":10}).to_string()))).await).await;
+    let id = created["id"].as_str().unwrap();
+    let path = format!("/drawer/v1/transfers/{id}");
+    let chunk = |offset: i64, bytes: &'static str| {
+        Request::put(&path).header("authorization", "Bearer machine-secret")
+            .header("x-upload-offset", offset.to_string()).body(Body::from(bytes)).unwrap()
+    };
+    assert_eq!(send(&app, chunk(2, "hello")).await.status(), StatusCode::PRECONDITION_FAILED);
+    let first = json_of(send(&app, chunk(0, "hello")).await).await;
+    assert_eq!(first["received"], 5);
+    // Simulate restart by building another app against the same on-disk store.
+    let restarted = drawer::app_with_auth(
+        Drawer::open(dir.path()).await.unwrap(),
+        Some("machine-secret".into()), None, Some("admin-password".into()), false,
+    );
+    let resumed = json_of(send(&restarted, req("GET", &path, Body::empty())).await).await;
+    assert_eq!(resumed["received"], 5);
+    assert_eq!(send(&restarted, chunk(5, "world")).await.status(), StatusCode::OK);
+    let saved = json_of(send(&restarted, req("POST", &format!("{path}/complete"), Body::empty())).await).await;
+    assert_eq!(saved["revision"], 1);
+    assert_eq!(saved["node"]["owner"], "admin");
+
+    let download = send(&restarted, req("GET", "/drawer/v1/files?path=/work/report.bin", Body::empty())).await;
+    assert_eq!(download.into_body().collect().await.unwrap().to_bytes(), "helloworld");
+    let partial = Request::get("/drawer/v1/files?path=/work/report.bin")
+        .header("authorization", "Bearer machine-secret")
+        .header("range", "bytes=2-5").body(Body::empty()).unwrap();
+    let range_result = send(&restarted, partial).await;
+    assert_eq!(range_result.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(range_result.headers()["content-range"], "bytes 2-5/10");
+    assert_eq!(range_result.into_body().collect().await.unwrap().to_bytes(), "llow");
+    let invalid_range = Request::get("/drawer/v1/files?path=/work/report.bin")
+        .header("authorization", "Bearer machine-secret")
+        .header("range", "bytes=500-900").body(Body::empty()).unwrap();
+    assert_eq!(send(&restarted, invalid_range).await.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    let second = json_of(send(&restarted, req("POST", "/drawer/v1/transfers",
+        Body::from(json!({"path":"/work/report.bin","size":3,"sha256":"0".repeat(64)}).to_string()))).await).await;
+    let second_path = format!("/drawer/v1/transfers/{}", second["id"].as_str().unwrap());
+    let chunk2 = Request::put(&second_path).header("authorization", "Bearer machine-secret")
+        .header("x-upload-offset", "0").body(Body::from("new")).unwrap();
+    assert_eq!(send(&restarted, chunk2).await.status(), StatusCode::OK);
+    assert_eq!(send(&restarted, req("POST", &format!("{second_path}/complete"), Body::empty())).await.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(send(&restarted, req("DELETE", &second_path, Body::empty())).await.status(), StatusCode::OK);
+    assert_eq!(send(&restarted, req("GET", &second_path, Body::empty())).await.status(), StatusCode::NOT_FOUND);
+    let history = json_of(send(&restarted, req("GET", "/drawer/v1/revisions?path=/work/report.bin", Body::empty())).await).await;
+    assert_eq!(history["revisions"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn download_link_follows_identity_when_its_old_path_is_reused() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = Drawer::open(dir.path()).await.unwrap();
+    let saved = svc.write("/shared.txt", b"shared", drawer::service::WriteOpts::new("owner", "")).await.unwrap();
+    let link = svc.create_download_link(&saved.node.id, "owner", 7).await.unwrap();
+    svc.move_to(drawer::service::Ref::Id(&saved.node.id), "/moved.txt", "owner").await.unwrap();
+    svc.write("/shared.txt", b"private replacement", drawer::service::WriteOpts::new("owner", "")).await.unwrap();
+    let (name, _, bytes) = svc.download_link_file(&link.token).await.unwrap();
+    assert_eq!(name, "moved.txt");
+    assert_eq!(tokio::fs::read(bytes).await.unwrap(), b"shared");
+}
+
+#[tokio::test]
+async fn transfer_chunk_limit_is_enforced_before_buffering_the_body() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = drawer::app(Drawer::open(dir.path()).await.unwrap(), None, None);
+    let request = Request::put("/drawer/v1/transfers/00000000-0000-4000-8000-000000000000")
+        .header("x-upload-offset", "0")
+        .body(Body::from(vec![0; 8 * 1024 * 1024 + 1])).unwrap();
+    assert_eq!(send(&app, request).await.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn password_mode_mcp_uses_verified_actor() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let svc = Drawer::open(dir.path()).await?;
+    let app = drawer::app_with_auth(svc.clone(), Some("machine".into()), None, Some("password".into()), false);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let transport = StreamableHttpClientTransport::from_config(
+        StreamableHttpClientTransportConfig::with_uri(format!("http://{addr}/mcp")).auth_header("machine"),
+    );
+    let client = ClientConfig::default().serve(transport).await?;
+    let result = client.call_tool(CallToolRequestParams::new("drawer_write").with_arguments(
+        json!({"path":"/mcp.txt", "content":"hello", "author":"impostor"}).as_object().unwrap().clone(),
+    )).await?;
+    assert_ne!(result.is_error, Some(true));
+    let node = svc.stat(drawer::service::Ref::Path("/mcp.txt")).await?;
+    assert_eq!(node.owner, "admin");
+    assert_eq!(node.modified_by.as_deref(), Some("admin"));
+    client.cancel().await?;
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn updater_requires_password_authentication() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = drawer::app_with_auth(Drawer::open(dir.path()).await.unwrap(), None, None, Some("password".into()), false);
+    assert_eq!(send(&app, get("/drawer/v1/update")).await.status(), StatusCode::UNAUTHORIZED);
+    let install = Request::post("/drawer/v1/update").body(Body::empty()).unwrap();
+    assert_eq!(send(&app, install).await.status(), StatusCode::UNAUTHORIZED);
+}

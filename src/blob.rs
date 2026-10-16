@@ -1,5 +1,6 @@
 //! Content-addressed blob storage on disk: `<root>/ab/cdef...` named by sha256.
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use tokio::io::AsyncReadExt;
 
 use sha2::{Digest, Sha256};
 
@@ -19,7 +20,7 @@ impl BlobStore {
         hex::encode(Sha256::digest(data))
     }
 
-    fn path_for(&self, hash: &str) -> Result<PathBuf> {
+    pub(crate) fn path_for(&self, hash: &str) -> Result<PathBuf> {
         if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(Error::Invalid("bad blob hash".into()));
         }
@@ -39,6 +40,29 @@ impl BlobStore {
         tokio::fs::write(&tmp, data).await?;
         tokio::fs::rename(&tmp, &path).await?;
         Ok(hash)
+    }
+
+    /// Stream a staged file into content-addressed storage without loading it into RAM.
+    pub async fn put_file(&self, staged: &Path) -> Result<(String, i64)> {
+        let mut file = tokio::fs::File::open(staged).await?;
+        let mut sha = Sha256::new();
+        let mut length = 0i64;
+        let mut chunk = vec![0u8; 256 * 1024];
+        loop {
+            let n = file.read(&mut chunk).await?;
+            if n == 0 { break; }
+            sha.update(&chunk[..n]);
+            length += n as i64;
+        }
+        let hash = hex::encode(sha.finalize());
+        let path = self.path_for(&hash)?;
+        if !tokio::fs::try_exists(&path).await? {
+            tokio::fs::create_dir_all(path.parent().expect("blob directory")).await?;
+            let tmp = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
+            tokio::fs::copy(staged, &tmp).await?;
+            tokio::fs::rename(&tmp, &path).await?;
+        }
+        Ok((hash, length))
     }
 
     /// Whether the blob for `hash` is on disk.

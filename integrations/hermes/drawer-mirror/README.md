@@ -96,10 +96,16 @@ content is sent once; re-running is safe. URLs are cleaned and deduplicated in
 The default scan root is `~/.hermes`; override it with `DRAWER_SYNC_ROOTS` or
 `--roots`. The standalone command reads `DRAWER_*` values from
 `~/.hermes/.env`. It skips secret/credential names, Hermes' own `config.yaml`
-and `profile.yaml`, databases, symlinks, dependency/cache directories, and
-files above the configured size limit. Paths outside the scan root are never
-uploaded. The existing configured `root` setting is still required to provide
-Drawer connection settings to the scanner.
+and `profile.yaml`, Hermes runtime logs under `~/.hermes/**/logs`, databases,
+symlinks, dependency/cache directories, and files above the configured size
+limit. Paths outside the scan root are never uploaded. The existing configured
+`root` setting is still required to provide Drawer connection settings to the
+scanner.
+
+Runtime logs are skipped because they change on every turn: mirroring one
+stores a full copy per scan as a new revision, and `agent.log` alone reached
+406 MB of history that way. Files a project keeps in its own `logs/` folder are
+unaffected -- the rule covers the Hermes home only.
 
 To create the optional user-upload folder, create `/hermes/uploads` in Drawer
 (or navigate there and use **New folder**). Files uploaded in the Drawer UI

@@ -30,17 +30,19 @@ pub const ROOT_ID: &str = "root";
 
 const READER: u8 = 1;
 const WRITER: u8 = 2;
-const OWNER: u8 = 3;
+pub(crate) const OWNER: u8 = 3;
 
 pub type Properties = std::collections::BTreeMap<String, String>;
 
 #[derive(Clone)]
 pub struct Drawer {
-    pool: SqlitePool,
+    pub(crate) pool: SqlitePool,
     blobs: BlobStore,
+    pub(crate) transfer_dir: std::path::PathBuf,
+    pub(crate) transfer_lock: Arc<Mutex<()>>,
     // Makes each check-then-write sequence one atomic step. Fine for the single-process server
     // this crate is; several processes sharing a store would need `BEGIN IMMEDIATE`.
-    write_lock: Arc<Mutex<()>>,
+    pub(crate) write_lock: Arc<Mutex<()>>,
 }
 
 /// How a caller names a node: by path (`/notes/todo.md`) or by its stable id.
@@ -543,6 +545,8 @@ impl Drawer {
         Ok(Self {
             pool,
             blobs: BlobStore::new(data_dir.join("blobs")),
+            transfer_dir: data_dir.join("transfers"),
+            transfer_lock: Arc::new(Mutex::new(())),
             write_lock: Arc::new(Mutex::new(())),
         })
     }
@@ -688,7 +692,7 @@ impl Drawer {
 
     /// Role check: grants on the node or any ancestor apply. A node with no grants anywhere is
     /// open, and its owner always passes. This is cooperative: callers name themselves.
-    async fn authorize(&self, id: &str, actor: &str, need: u8) -> Result<()> {
+    pub(crate) async fn authorize(&self, id: &str, actor: &str, need: u8) -> Result<()> {
         let rows = sqlx::query(
             "WITH RECURSIVE anc(id) AS (SELECT ? UNION ALL SELECT n.parent_id FROM nodes n JOIN anc ON n.id = anc.id \
              WHERE n.parent_id IS NOT NULL) \
@@ -791,6 +795,17 @@ impl Drawer {
         let rev = self.revision_row(&node.id, revision).await?;
         let data = self.blobs.get(&rev.hash).await?;
         Ok((rev, data))
+    }
+
+    /// Resolve a file revision to its content-addressed on-disk path for streamed HTTP downloads.
+    pub async fn read_file_path(&self, r: Ref<'_>, revision: Option<i64>) -> Result<(Revision, std::path::PathBuf)> {
+        let node = self.resolve(r).await?;
+        let rev = self.revision_row(&node.id, revision).await?;
+        let path = self.blobs.path_for(&rev.hash)?;
+        if !tokio::fs::try_exists(&path).await? {
+            return Err(Error::Internal(format!("blob {} missing", rev.hash)));
+        }
+        Ok((rev, path))
     }
 
     async fn revision_row(&self, node_id: &str, revision: Option<i64>) -> Result<Revision> {
@@ -987,6 +1002,26 @@ impl Drawer {
         let hash = self.blobs.put(data).await?;
         let mime = guess_mime(&norm, data);
         self.commit(&norm, &hash, data.len() as i64, &mime, &opts.properties, &opts).await
+    }
+
+    /// Commit a staged transfer without loading the full file into memory.
+    pub async fn write_staged(
+        &self, path: &str, staged: &Path, opts: WriteOpts, expected_hash: Option<&str>,
+    ) -> Result<WriteOutcome> {
+        let norm = normalize(path)?;
+        if norm == "/" { return Err(Error::Invalid("cannot write to root".into())); }
+        validate_properties(&opts.properties)?;
+        let (hash, size) = self.blobs.put_file(staged).await?;
+        if expected_hash.is_some_and(|expected| expected != hash) {
+            return Err(Error::Invalid("uploaded file SHA-256 checksum mismatch".into()));
+        }
+        let mut file = tokio::fs::File::open(staged).await?;
+        use tokio::io::AsyncReadExt;
+        let mut sample = vec![0u8; 8192];
+        let n = file.read(&mut sample).await?;
+        sample.truncate(n);
+        let mime = guess_mime(&norm, &sample);
+        self.commit(&norm, &hash, size, &mime, &opts.properties, &opts).await
     }
 
     /// Core write path, shared by `write`, `copy` and `rollback`. The blob must already exist.
