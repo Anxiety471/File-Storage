@@ -192,6 +192,56 @@ export const api = {
     );
     return r.json();
   },
+  /** Upload in 4 MiB chunks; restart the same selected File to resume a failed transfer. */
+  async upload(
+    path: string,
+    file: File,
+    onProgress: (done: number, total: number) => void,
+    signal?: AbortSignal,
+  ): Promise<WriteOutcome> {
+    const key = `drawer:transfer:${path}:${file.size}:${file.lastModified}`;
+    const opts = { headers: headers() };
+    let id = localStorage.getItem(key);
+    let offset = 0;
+    if (id) {
+      try {
+        const r = await check(await fetch(`${BASE}/transfers/${encodeURIComponent(id)}`, opts));
+        const state: { received: number; size: number; path: string } = await r.json();
+        if (state.size !== file.size || state.path !== path) throw new Error("Upload changed");
+        offset = state.received;
+      } catch {
+        localStorage.removeItem(key);
+        id = null;
+      }
+    }
+    if (!id) {
+      const r = await check(await fetch(`${BASE}/transfers`, json("POST", { path, size: file.size })));
+      const state: { id: string } = await r.json();
+      id = state.id;
+      localStorage.setItem(key, id);
+    }
+    onProgress(offset, file.size);
+    while (offset < file.size) {
+      if (signal?.aborted) throw new DOMException("Upload paused", "AbortError");
+      const chunk = file.slice(offset, Math.min(offset + 4 * 1024 * 1024, file.size));
+      const r = await check(await fetch(`${BASE}/transfers/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        headers: headers({ "x-upload-offset": String(offset) }),
+        body: chunk,
+        signal,
+      }));
+      const state: { received: number } = await r.json();
+      if (state.received <= offset) throw new Error("Transfer made no progress");
+      offset = state.received;
+      onProgress(offset, file.size);
+    }
+    const r = await check(await fetch(`${BASE}/transfers/${encodeURIComponent(id)}/complete`, {
+      method: "POST", headers: headers(), signal,
+    }));
+    const outcome: WriteOutcome = await r.json();
+    localStorage.removeItem(key);
+    return outcome;
+  },
   // Moves the file to the trash. Restore it from the Trash view.
   async trash(path: string): Promise<void> {
     await check(await fetch(`${BASE}/files?${q(path)}`, { method: "DELETE", headers: headers() }));
