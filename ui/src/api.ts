@@ -168,6 +168,18 @@ export const api = {
   },
   // Saves the file through the browser's download prompt.
   async download(path: string, revision?: number): Promise<void> {
+    // The browser's native download manager streams files without buffering multi-GB
+    // content in JavaScript memory. HttpOnly sessions travel with same-origin requests.
+    const status = await api.authStatus().catch(() => null);
+    if (status?.authenticated) {
+      const extra = (revision ? `&revision=${revision}` : "") + "&download=true";
+      const a = document.createElement("a");
+      a.href = `${BASE}/files?${q(path, extra)}`;
+      a.download = path.split("/").pop() || "download";
+      a.click();
+      return;
+    }
+    // Legacy DRAWER_TOKEN mode needs an Authorization header and therefore a fetch/blob.
     const blob = await api.readBlob(path, revision, true);
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
