@@ -3,6 +3,7 @@ pub mod api;
 pub mod blob;
 pub mod cli;
 pub mod error;
+pub mod links;
 pub mod mcp;
 pub mod service;
 
@@ -36,6 +37,7 @@ pub fn app(svc: Drawer, token: Option<String>, ui_dir: Option<PathBuf>) -> Route
     // Top level, ahead of the UI fallback, so `/health` is never answered with index.html.
     let mut app = Router::new()
         .route("/health", axum::routing::get(api::health))
+        .route("/s/{token}", axum::routing::get(api::download_shared).with_state(svc.clone()))
         .nest("/drawer/v1", api::router().with_state(svc).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)))
         .nest_service("/mcp", mcp)
         .layer(middleware::from_fn(session_delete_ok));
@@ -65,6 +67,14 @@ async fn session_delete_ok(req: Request, next: Next) -> Response {
 }
 
 async fn check_token(token: &str, req: Request, next: Next) -> Response {
+    // Public shares bypass the instance-wide bearer token, but only this one GET route.
+    let public_link = req.method() == axum::http::Method::GET
+        && req.uri().path().strip_prefix("/s/").is_some_and(|token| {
+            token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit())
+        });
+    if public_link {
+        return next.run(req).await;
+    }
     let ok = req
         .headers()
         .get(header::AUTHORIZATION)
