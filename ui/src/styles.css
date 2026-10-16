@@ -367,3 +367,20 @@ tr:hover .row-actions, tr.menu-open .row-actions, .row-actions:focus-within { op
 .bulk-bar .btn { flex-shrink: 0; }
 .files .col-select { width: 40px; text-align: center; }
 .files .col-select input { width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent); }
+
+/* Keep search and account actions usable together on phone screens. */
+@media (max-width: 600px) {
+  .topbar {
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    gap: 8px;
+    height: auto;
+    min-height: 64px;
+    flex-shrink: 0;
+  }
+  .topbar .brand { grid-column: 1; grid-row: 1; }
+  .topbar .search { grid-column: 2 / -1; grid-row: 1; min-width: 0; max-width: none; }
+  .topbar > .btn { grid-row: 2; white-space: nowrap; }
+  .topbar > .update-btn { grid-column: 2; justify-self: start; }
+  .topbar > .btn:not(.update-btn) { grid-column: 3; justify-self: end; }
+}
