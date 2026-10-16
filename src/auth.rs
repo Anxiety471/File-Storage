@@ -13,6 +13,9 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 #[derive(Clone)]
+pub struct VerifiedAdmin;
+
+#[derive(Clone)]
 pub struct AuthGate {
     password_digest: [u8; 32],
     api_token: Option<String>,

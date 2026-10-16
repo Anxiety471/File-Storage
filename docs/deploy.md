@@ -4,7 +4,7 @@ Drawer is a private, self-hosted file-transfer app, **not** a NAS operating syst
 
 ## Prerequisites
 
-Ubuntu Server with Docker Engine + Compose v2, available disk space, and a private way to connect (SSH forwarding, Tailscale, or an HTTPS reverse proxy). Install Docker using its official Ubuntu instructions. This compose configuration binds Drawer to **127.0.0.1:8787**, not the public interface.
+Ubuntu Server with Docker Engine + Compose v2 and `flock` (from util-linux), available disk space, and a private way to connect (SSH forwarding, Tailscale, or an HTTPS reverse proxy). Install Docker using its official Ubuntu instructions. This compose configuration binds Drawer to **127.0.0.1:8787**, not the public interface.
 
 ## Start
 
@@ -52,7 +52,7 @@ bash ops/restore.sh ./backups/drawer-YYYYMMDDTHHMMSSZ.tar.gz
 docker compose exec drawer drawer doctor
 ```
 
-Restore checks the manifest, prompts for `RESTORE`, creates a safety backup of the current store, and only then extracts the archive. A failed restore needs manual inspection/rollback from the safety archive. **Test recovery on another machine before relying on these backups.**
+Restore verifies the selected archive against its checksum, prompts for `RESTORE`, and holds the writer stopped while creating a safety backup and restoring. Backup and restore operations are serialized with a maintenance lock. If restore fails, Drawer stays stopped; inspect the retained `pre-restore-*` directory and safety archive before starting it. **Test recovery on another machine before relying on these backups.**
 
 ## Security and limits
 

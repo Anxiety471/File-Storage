@@ -213,7 +213,8 @@ export const api = {
   ): Promise<WriteOutcome> {
     const key = `drawer:transfer:${path}:${file.size}:${file.lastModified}`;
     const opts = { headers: headers() };
-    let id = localStorage.getItem(key);
+    let id: string | null = null;
+    try { id = localStorage.getItem(key); } catch { /* Storage may be blocked. */ }
     let offset = 0;
     if (id) {
       try {
@@ -222,7 +223,7 @@ export const api = {
         if (state.size !== file.size || state.path !== path) throw new Error("Upload changed");
         offset = state.received;
       } catch {
-        localStorage.removeItem(key);
+        try { localStorage.removeItem(key); } catch { /* Optional resume cache. */ }
         id = null;
       }
     }
@@ -230,7 +231,7 @@ export const api = {
       const r = await check(await fetch(`${BASE}/transfers`, json("POST", { path, size: file.size })));
       const state: { id: string } = await r.json();
       id = state.id;
-      localStorage.setItem(key, id);
+      try { localStorage.setItem(key, id); } catch { /* Uploads still work without resume caching. */ }
     }
     onProgress(offset, file.size);
     while (offset < file.size) {
@@ -251,7 +252,7 @@ export const api = {
       method: "POST", headers: headers(), signal,
     }));
     const outcome: WriteOutcome = await r.json();
-    localStorage.removeItem(key);
+    try { localStorage.removeItem(key); } catch { /* Optional resume cache. */ }
     return outcome;
   },
   // Moves the file to the trash. Restore it from the Trash view.

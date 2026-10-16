@@ -42,7 +42,7 @@ pub struct Drawer {
     pub(crate) transfer_lock: Arc<Mutex<()>>,
     // Makes each check-then-write sequence one atomic step. Fine for the single-process server
     // this crate is; several processes sharing a store would need `BEGIN IMMEDIATE`.
-    write_lock: Arc<Mutex<()>>,
+    pub(crate) write_lock: Arc<Mutex<()>>,
 }
 
 /// How a caller names a node: by path (`/notes/todo.md`) or by its stable id.

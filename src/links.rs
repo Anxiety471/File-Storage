@@ -31,6 +31,7 @@ impl Drawer {
         if !(1..=30).contains(&days) {
             return Err(Error::Invalid("link expiry must be between 1 and 30 days".into()));
         }
+        let _guard = self.write_lock.lock().await;
         let node = self.stat(Ref::Id(id)).await?;
         if node.kind != "file" || node.trashed || self.stat(Ref::Path(&node.path)).await?.id != id {
             return Err(Error::NotFound("live file".into()));
@@ -69,6 +70,7 @@ impl Drawer {
     }
 
     pub async fn revoke_download_link(&self, id: &str, link_id: &str, actor: &str) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
         self.stat(Ref::Id(id)).await?;
         self.authorize(id, actor, OWNER).await?;
         let changed = sqlx::query("DELETE FROM download_links WHERE id = ? AND node_id = ?")
@@ -89,6 +91,7 @@ impl Drawer {
         if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(Error::NotFound("download link".into()));
         }
+        let _guard = self.write_lock.lock().await;
         let hash = hex::encode(Sha256::digest(token.as_bytes()));
         let row = sqlx::query("SELECT node_id FROM download_links WHERE token_hash = ? AND expires_at > ?")
             .bind(hash)
@@ -106,7 +109,7 @@ impl Drawer {
         if live.id != id {
             return Err(Error::NotFound("download link".into()));
         }
-        let (rev, file_path) = self.read_file_path(Ref::Path(&node.path), None).await?;
+        let (rev, file_path) = self.read_file_path(Ref::Id(&id), None).await?;
         Ok((node.name, rev.size, file_path))
     }
 }

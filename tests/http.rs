@@ -515,6 +515,20 @@ async fn password_session_authenticates_browser_and_prevents_author_spoofing() {
     let authed = Request::get("/drawer/v1/files?path=/private.txt")
         .header("cookie", &cookie).body(Body::empty()).unwrap();
     assert_eq!(send(&app, authed).await.status(), StatusCode::OK);
+    // JSON author fields must follow the verified identity just like headers do.
+    for (endpoint, body) in [
+        ("edit", json!({"path":"/private.txt", "old_string":"secret", "new_string":"edited", "author":"impostor"})),
+        ("rollback", json!({"path":"/private.txt", "revision":1, "author":"impostor"})),
+        ("copy", json!({"from":"/private.txt", "to":"/copied.txt", "author":"impostor"})),
+    ] {
+        let request = Request::post(format!("/drawer/v1/{endpoint}"))
+            .header("cookie", &cookie).header("content-type", "application/json")
+            .body(Body::from(body.to_string())).unwrap();
+        let response = send(&app, request).await;
+        assert_eq!(response.status(), StatusCode::OK, "{endpoint}");
+        let saved = json_of(response).await;
+        assert_eq!(saved["node"]["modified_by"], "admin", "{endpoint}");
+    }
     let logout = Request::post("/auth/logout").header("cookie", &cookie).body(Body::empty()).unwrap();
     assert_eq!(send(&app, logout).await.status(), StatusCode::NO_CONTENT);
     let expired = Request::get("/drawer/v1/tree?path=/").header("cookie", cookie).body(Body::empty()).unwrap();
@@ -585,4 +599,51 @@ async fn resumable_upload_rejects_bad_offsets_and_assembles_file_without_losing_
     assert_eq!(send(&restarted, req("GET", &second_path, Body::empty())).await.status(), StatusCode::NOT_FOUND);
     let history = json_of(send(&restarted, req("GET", "/drawer/v1/revisions?path=/work/report.bin", Body::empty())).await).await;
     assert_eq!(history["revisions"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn download_link_follows_identity_when_its_old_path_is_reused() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = Drawer::open(dir.path()).await.unwrap();
+    let saved = svc.write("/shared.txt", b"shared", drawer::service::WriteOpts::new("owner", "")).await.unwrap();
+    let link = svc.create_download_link(&saved.node.id, "owner", 7).await.unwrap();
+    svc.move_to(drawer::service::Ref::Id(&saved.node.id), "/moved.txt", "owner").await.unwrap();
+    svc.write("/shared.txt", b"private replacement", drawer::service::WriteOpts::new("owner", "")).await.unwrap();
+    let (name, _, bytes) = svc.download_link_file(&link.token).await.unwrap();
+    assert_eq!(name, "moved.txt");
+    assert_eq!(tokio::fs::read(bytes).await.unwrap(), b"shared");
+}
+
+#[tokio::test]
+async fn transfer_chunk_limit_is_enforced_before_buffering_the_body() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = drawer::app(Drawer::open(dir.path()).await.unwrap(), None, None);
+    let request = Request::put("/drawer/v1/transfers/00000000-0000-4000-8000-000000000000")
+        .header("x-upload-offset", "0")
+        .body(Body::from(vec![0; 8 * 1024 * 1024 + 1])).unwrap();
+    assert_eq!(send(&app, request).await.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn password_mode_mcp_uses_verified_actor() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let svc = Drawer::open(dir.path()).await?;
+    let app = drawer::app_with_auth(svc.clone(), Some("machine".into()), None, Some("password".into()), false);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let transport = StreamableHttpClientTransport::from_config(
+        StreamableHttpClientTransportConfig::with_uri(format!("http://{addr}/mcp")).auth_header("machine"),
+    );
+    let client = ClientConfig::default().serve(transport).await?;
+    let result = client.call_tool(CallToolRequestParams::new("drawer_write").with_arguments(
+        json!({"path":"/mcp.txt", "content":"hello", "author":"impostor"}).as_object().unwrap().clone(),
+    )).await?;
+    assert_ne!(result.is_error, Some(true));
+    let node = svc.stat(drawer::service::Ref::Path("/mcp.txt")).await?;
+    assert_eq!(node.owner, "admin");
+    assert_eq!(node.modified_by.as_deref(), Some("admin"));
+    client.cancel().await?;
+    server.abort();
+    Ok(())
 }

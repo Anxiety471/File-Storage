@@ -137,7 +137,7 @@ pub fn router() -> Router<Drawer> {
         .route("/folders", post(mkdir).delete(delete_file))
         .route("/files", get(read_file).put(write_file).delete(delete_file))
         .route("/transfers", post(crate::transfers::start))
-        .route("/transfers/{id}", get(crate::transfers::status).put(crate::transfers::append).delete(crate::transfers::cancel))
+        .route("/transfers/{id}", get(crate::transfers::status).put(crate::transfers::append).layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024)).delete(crate::transfers::cancel))
         .route("/transfers/{id}/complete", post(crate::transfers::complete))
         .route("/files/meta", get(meta))
         .route("/revisions", get(revisions))
@@ -227,8 +227,8 @@ async fn diff(State(s): State<Drawer>, Query(q): Query<DiffQ>) -> Result<Json<Va
 }
 
 /// Replace `old_string` with `new_string` in a text file, as one guarded revision.
-async fn edit(State(s): State<Drawer>, headers: HeaderMap, Json(b): Json<EditBody>) -> Result<Json<Value>> {
-    let mut opts = WriteOpts::new(b.author.unwrap_or_else(|| actor(&headers)), b.comment.unwrap_or_default());
+async fn edit(State(s): State<Drawer>, verified: Option<axum::Extension<crate::auth::VerifiedAdmin>>, headers: HeaderMap, Json(b): Json<EditBody>) -> Result<Json<Value>> {
+    let mut opts = WriteOpts::new(body_actor(verified.is_some(), b.author, &headers), b.comment.unwrap_or_default());
     opts.if_head_revision = b.if_head_revision;
     let e = Edit { old: b.old_string, new: b.new_string, replace_all: b.replace_all };
     Ok(out(s.edit(&b.path, &[e], opts).await?))
@@ -338,14 +338,14 @@ async fn revisions(State(s): State<Drawer>, Query(q): Query<PathQ>) -> Result<Js
     Ok(Json(json!({ "revisions": s.revisions(target(&q)?).await? })))
 }
 
-async fn rollback(State(s): State<Drawer>, Json(b): Json<RollbackBody>) -> Result<Json<Value>> {
-    let mut opts = WriteOpts::new(b.author.unwrap_or_else(|| "api".into()), b.comment.unwrap_or_default());
+async fn rollback(State(s): State<Drawer>, verified: Option<axum::Extension<crate::auth::VerifiedAdmin>>, headers: HeaderMap, Json(b): Json<RollbackBody>) -> Result<Json<Value>> {
+    let mut opts = WriteOpts::new(body_actor(verified.is_some(), b.author, &headers), b.comment.unwrap_or_default());
     opts.if_head_revision = b.if_head_revision;
     Ok(out(s.rollback(pick(&b.id, &b.path)?, b.revision, opts).await?))
 }
 
-async fn copy(State(s): State<Drawer>, Json(b): Json<CopyBody>) -> Result<Json<Value>> {
-    let mut opts = WriteOpts::new(b.author.unwrap_or_else(|| "api".into()), b.comment.unwrap_or_default());
+async fn copy(State(s): State<Drawer>, verified: Option<axum::Extension<crate::auth::VerifiedAdmin>>, headers: HeaderMap, Json(b): Json<CopyBody>) -> Result<Json<Value>> {
+    let mut opts = WriteOpts::new(body_actor(verified.is_some(), b.author, &headers), b.comment.unwrap_or_default());
     opts.if_head_revision = b.if_head_revision;
     Ok(out(s.copy(pick(&b.from_id, &b.from)?, &b.to, b.source_revision, opts).await?))
 }
@@ -440,4 +440,8 @@ async fn starred(State(s): State<Drawer>) -> Result<Json<Value>> {
 
 async fn search(State(s): State<Drawer>, Query(q): Query<SearchQ>) -> Result<Json<Value>> {
     Ok(Json(json!({ "hits": s.search(&q.q, q.limit.unwrap_or(50)).await? })))
+}
+
+fn body_actor(verified: bool, supplied: Option<String>, headers: &HeaderMap) -> String {
+    if verified { "admin".into() } else { supplied.unwrap_or_else(|| actor(headers)) }
 }

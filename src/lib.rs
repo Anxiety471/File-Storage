@@ -42,9 +42,10 @@ pub fn app_with_auth(
     admin_password: Option<String>,
     secure_cookie: bool,
 ) -> Router {
+    let password_mode = admin_password.as_ref().is_some_and(|s| !s.is_empty());
     let mcp_svc = svc.clone();
     let mcp = StreamableHttpService::new(
-        move || Ok(mcp::DrawerMcp::new(mcp_svc.clone())),
+        move || Ok(mcp::DrawerMcp::new(mcp_svc.clone()).with_verified_admin(password_mode)),
         Arc::new(LocalSessionManager::default()),
         StreamableHttpServerConfig::default(),
     );
@@ -55,7 +56,6 @@ pub fn app_with_auth(
         .nest("/drawer/v1", api::router().with_state(svc).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)))
         .nest_service("/mcp", mcp)
         .layer(middleware::from_fn(session_delete_ok));
-    let password_mode = admin_password.as_ref().is_some_and(|s| !s.is_empty());
     if let Some(password) = admin_password.filter(|s| !s.is_empty()) {
         let gate = auth::AuthGate::new(password, token, secure_cookie);
         app = app.merge(
@@ -76,6 +76,7 @@ pub fn app_with_auth(
                     }
                     // Only a verified admin session or machine token can supply an author identity.
                     req.headers_mut().insert("x-drawer-author", "admin".parse().unwrap());
+                    req.extensions_mut().insert(auth::VerifiedAdmin);
                 }
                 next.run(req).await
             }
