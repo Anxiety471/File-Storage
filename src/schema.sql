@@ -51,3 +51,16 @@ CREATE TABLE IF NOT EXISTS download_links (
     expires_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS download_links_node ON download_links(node_id);
+
+-- Resumable uploads; parts are stored under transfers/<id>.part.
+CREATE TABLE IF NOT EXISTS transfers (
+    id               TEXT PRIMARY KEY,
+    path             TEXT NOT NULL,
+    size             INTEGER NOT NULL,
+    received         INTEGER NOT NULL DEFAULT 0,
+    actor            TEXT NOT NULL,
+    sha256           TEXT,
+    if_head_revision INTEGER,
+    expires_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS transfers_expiry ON transfers(expires_at);
