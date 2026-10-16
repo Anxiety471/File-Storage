@@ -362,23 +362,38 @@ export function App() {
   };
 
   const uploadInput = useRef<HTMLInputElement>(null);
+  const folderInput = useRef<HTMLInputElement>(null);
+  const uploadAbort = useRef<AbortController | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<{ name: string; completed: number; total: number; index: number; count: number } | null>(null);
   const [dropping, setDropping] = useState(false);
 
-  // Uploading onto an existing name adds a revision to that file, so nothing is overwritten for good.
+  // Transfers are persisted server-side. Selecting the same file after interruption resumes it.
   const upload = (files: File[]) =>
     run(async () => {
-      if (files.length === 0) return;
+      if (!files.length || uploadAbort.current) return;
       const dir = currentDir;
-      notify(files.length === 1 ? `Uploading “${files[0].name}”…` : `Uploading ${files.length} files…`);
+      const ctrl = new AbortController();
+      uploadAbort.current = ctrl;
       let done = 0;
-      for (const f of files) {
-        await api.write(join(dir, f.name), f, `uploaded ${f.name}`);
-        done++;
-        if (files.length > 1) notify(`Uploading ${done} of ${files.length}…`);
+      try {
+        for (const f of files) {
+          const name = f.webkitRelativePath || f.name;
+          const path = join(dir, name);
+          await api.upload(path, f, (completed, total) => {
+            setUploadProgress({ name, completed, total, index: done + 1, count: files.length });
+          }, ctrl.signal);
+          done++;
+        }
+        if (view.kind !== "drive") setView({ kind: "drive", path: dir });
+        else await refresh();
+        notify(done === 1 ? "Uploaded 1 file" : `Uploaded ${done} files`);
+      } catch (e) {
+        if (ctrl.signal.aborted) notify("Upload paused. Select the same files to resume.");
+        else throw e;
+      } finally {
+        uploadAbort.current = null;
+        setUploadProgress(null);
       }
-      if (view.kind !== "drive") setView({ kind: "drive", path: dir });
-      else await refresh();
-      notify(done === 1 ? `Uploaded “${files[0].name}”` : `Uploaded ${done} files`);
     });
 
   const newFolder = () => {
@@ -594,6 +609,12 @@ export function App() {
                   >
                     <Icon name="upload" size={18} /> Upload files
                   </button>
+                  <button role="menuitem" onClick={() => {
+                    setNewMenu(false);
+                    folderInput.current?.click();
+                  }}>
+                    <Icon name="folder" size={18} /> Upload folder
+                  </button>
                 </div>
               </>
             )}
@@ -606,6 +627,21 @@ export function App() {
 
         <input
           ref={uploadInput}
+          type="file"
+          multiple
+          hidden
+          onChange={(e) => {
+            const files = Array.from(e.target.files ?? []);
+            e.target.value = "";
+            upload(files);
+          }}
+        />
+        <input
+          ref={(el) => {
+            folderInput.current = el;
+            el?.setAttribute("webkitdirectory", "");
+            el?.setAttribute("directory", "");
+          }}
           type="file"
           multiple
           hidden
@@ -633,6 +669,16 @@ export function App() {
           }}
         >
           {loading && !file && <div className="progress" aria-hidden="true" />}
+          {uploadProgress && (
+            <div className="transfer-progress" role="status" aria-live="polite">
+              <span className="transfer-label">
+                Uploading {uploadProgress.index}/{uploadProgress.count}: {uploadProgress.name}
+                {" · "}{Math.round((uploadProgress.completed / Math.max(1, uploadProgress.total)) * 100)}%
+              </span>
+              <progress value={uploadProgress.completed} max={Math.max(1, uploadProgress.total)} />
+              <button className="btn" type="button" onClick={() => uploadAbort.current?.abort()}>Pause</button>
+            </div>
+          )}
           {dropping && (
             <div className="drop-hint">
               <Icon name="upload" size={32} />
