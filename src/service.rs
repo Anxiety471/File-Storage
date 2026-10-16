@@ -797,6 +797,17 @@ impl Drawer {
         Ok((rev, data))
     }
 
+    /// Resolve a file revision to its content-addressed on-disk path for streamed HTTP downloads.
+    pub async fn read_file_path(&self, r: Ref<'_>, revision: Option<i64>) -> Result<(Revision, std::path::PathBuf)> {
+        let node = self.resolve(r).await?;
+        let rev = self.revision_row(&node.id, revision).await?;
+        let path = self.blobs.path_for(&rev.hash)?;
+        if !tokio::fs::try_exists(&path).await? {
+            return Err(Error::Internal(format!("blob {} missing", rev.hash)));
+        }
+        Ok((rev, path))
+    }
+
     async fn revision_row(&self, node_id: &str, revision: Option<i64>) -> Result<Revision> {
         let node = self.node(node_id, None).await?;
         let want = match revision {
