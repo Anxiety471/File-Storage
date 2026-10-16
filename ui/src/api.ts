@@ -121,7 +121,29 @@ const json = (method: string, body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
+export interface AuthStatus {
+  mode: "password";
+  authenticated: boolean;
+  user: string | null;
+}
+
 export const api = {
+  async authStatus(): Promise<AuthStatus> {
+    const response = await fetch("/auth/me", { credentials: "same-origin" });
+    if (!response.ok) throw new ApiError(response.status, "Password authentication is not configured");
+    return response.json();
+  },
+  async login(password: string): Promise<void> {
+    const response = await fetch("/auth/login", {
+      method: "POST", credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    if (!response.ok) throw new ApiError(response.status, "Incorrect administrator password");
+  },
+  async logout(): Promise<void> {
+    await check(await fetch("/auth/logout", { method: "POST", credentials: "same-origin" }));
+  },
   async tree(path: string): Promise<Node[]> {
     const r = await check(await fetch(`${BASE}/tree?${q(path)}`, { headers: headers() }));
     return (await r.json()).entries;
