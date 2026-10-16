@@ -30,13 +30,13 @@ pub const ROOT_ID: &str = "root";
 
 const READER: u8 = 1;
 const WRITER: u8 = 2;
-const OWNER: u8 = 3;
+pub(crate) const OWNER: u8 = 3;
 
 pub type Properties = std::collections::BTreeMap<String, String>;
 
 #[derive(Clone)]
 pub struct Drawer {
-    pool: SqlitePool,
+    pub(crate) pool: SqlitePool,
     blobs: BlobStore,
     // Makes each check-then-write sequence one atomic step. Fine for the single-process server
     // this crate is; several processes sharing a store would need `BEGIN IMMEDIATE`.
@@ -688,7 +688,7 @@ impl Drawer {
 
     /// Role check: grants on the node or any ancestor apply. A node with no grants anywhere is
     /// open, and its owner always passes. This is cooperative: callers name themselves.
-    async fn authorize(&self, id: &str, actor: &str, need: u8) -> Result<()> {
+    pub(crate) async fn authorize(&self, id: &str, actor: &str, need: u8) -> Result<()> {
         let rows = sqlx::query(
             "WITH RECURSIVE anc(id) AS (SELECT ? UNION ALL SELECT n.parent_id FROM nodes n JOIN anc ON n.id = anc.id \
              WHERE n.parent_id IS NOT NULL) \
