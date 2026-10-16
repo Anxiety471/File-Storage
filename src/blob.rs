@@ -20,7 +20,7 @@ impl BlobStore {
         hex::encode(Sha256::digest(data))
     }
 
-    fn path_for(&self, hash: &str) -> Result<PathBuf> {
+    pub(crate) fn path_for(&self, hash: &str) -> Result<PathBuf> {
         if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(Error::Invalid("bad blob hash".into()));
         }
