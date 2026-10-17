@@ -702,3 +702,23 @@ async fn zip_selection_streams_nested_files_and_empty_folders() {
     entry.read_to_end(&mut content).await.unwrap();
     assert_eq!(content, b"zip content");
 }
+
+#[tokio::test]
+async fn storage_distinguishes_deduplication_history_and_staging() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Drawer::open(dir.path()).await.unwrap();
+    s.write("/a", b"same", drawer::service::WriteOpts::new("api", "")).await.unwrap();
+    s.write("/b", b"same", drawer::service::WriteOpts::new("api", "")).await.unwrap();
+    s.write("/a", b"new", drawer::service::WriteOpts::new("api", "")).await.unwrap();
+    tokio::fs::create_dir_all(dir.path().join("transfers")).await.unwrap();
+    tokio::fs::write(dir.path().join("transfers/staged.part"), b"12345").await.unwrap();
+    let app = drawer::app(s, None, None);
+    let stats = json_of(send(&app, get("/drawer/v1/storage")).await).await;
+    assert_eq!(stats["live_files"], 2);
+    assert_eq!(stats["live_bytes"], 7);
+    assert_eq!(stats["revision_bytes"], 11);
+    assert_eq!(stats["blob_bytes"], 7);
+    assert_eq!(stats["staging_bytes"], 5);
+    assert_eq!(stats["unreferenced_blob_bytes"], 0);
+    assert!(stats["filesystem_available_bytes"].as_u64().unwrap() > 0);
+}

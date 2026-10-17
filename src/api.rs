@@ -174,6 +174,7 @@ pub fn router() -> Router<Drawer> {
         .route("/health", get(health))
         .route("/tree", get(tree))
         .route("/archive", get(crate::archive::download))
+        .route("/storage", get(crate::storage::stats))
         .route("/recent", get(recent))
         .route("/update", get(update_check).post(update_install))
         .route("/diff", get(diff))

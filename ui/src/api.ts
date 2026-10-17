@@ -146,7 +146,10 @@ export interface AuthStatus {
   user: string | null;
 }
 
+export interface StorageStats { live_files: number; live_bytes: number; revisions: number; revision_bytes: number; blob_bytes: number; unreferenced_blob_bytes: number; staging_bytes: number; database_bytes: number; filesystem_total_bytes: number; filesystem_available_bytes: number; }
+
 export const api = {
+  async storage(): Promise<StorageStats> { return (await check(await fetch(`${BASE}/storage`, { headers: headers() }))).json(); },
   /** Is a newer release published than the one this server runs? */
   async updateCheck(): Promise<UpdateStatus> {
     const r = await check(await fetch(`${BASE}/update`, { headers: headers() }));

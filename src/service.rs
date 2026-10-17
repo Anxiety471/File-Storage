@@ -37,6 +37,7 @@ pub type Properties = std::collections::BTreeMap<String, String>;
 #[derive(Clone)]
 pub struct Drawer {
     pub(crate) pool: SqlitePool,
+    pub(crate) data_dir: std::path::PathBuf,
     blobs: BlobStore,
     pub(crate) transfer_dir: std::path::PathBuf,
     pub(crate) transfer_lock: Arc<Mutex<()>>,
@@ -544,6 +545,7 @@ impl Drawer {
         let pool = SqlitePool::connect_with(opts).await?;
         Ok(Self {
             pool,
+            data_dir: data_dir.to_owned(),
             blobs: BlobStore::new(data_dir.join("blobs")),
             transfer_dir: data_dir.join("transfers"),
             transfer_lock: Arc::new(Mutex::new(())),
