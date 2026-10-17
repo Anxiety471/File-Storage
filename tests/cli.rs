@@ -405,7 +405,7 @@ fn explicit_store_overrides_environment_and_home_default() {
 fn mcp_config_uses_home_store_without_creating_it() {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("home");
-    let config = ok(standalone(&home, tmp.path(), &["mcp-config"]).output().unwrap());
+    let config = ok(standalone(&home, tmp.path(), &["mcp-config", "--format", "json"]).output().unwrap());
     let value: serde_json::Value = serde_json::from_str(&config).unwrap();
     let args = &value["mcpServers"]["drawer"]["args"];
     assert_eq!(args[0], "--data-dir");
