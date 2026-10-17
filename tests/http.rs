@@ -859,3 +859,15 @@ async fn named_user_mcp_uses_private_store_and_verified_actor() {
     let admin=Request::get("/drawer/v1/files?path=/mcp-private").header("authorization","Bearer machine").body(Body::empty()).unwrap();
     assert_eq!(send(&app,admin).await.status(),StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn archive_rejects_names_that_windows_extractors_treat_as_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Drawer::open(dir.path()).await.unwrap();
+    for path in ["/..\\escape.txt", "/C:drive.txt", "/.. /escape.txt"] {
+        let file = s.write(path, b"safe contents", drawer::service::WriteOpts::new("api", "")).await.unwrap();
+        let app = drawer::app(s.clone(), None, None);
+        let response = send(&app, get(&format!("/drawer/v1/archive?ids={}", file.node.id))).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+    }
+}
