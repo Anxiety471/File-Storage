@@ -151,7 +151,10 @@ export interface StorageStats { live_files: number; live_bytes: number; revision
 export interface HostMount { id: string; name: string }
 export interface HostEntry { name: string; path: string; kind: "folder" | "file"; size: number }
 
+export interface ActivityEvent { id: number; actor: string; method: string; route: string; status: number; created_at: string }
+
 export const api = {
+  async activity(before?: number): Promise<ActivityEvent[]> { return (await check(await fetch(`${BASE}/activity${before ? `?before=${before}` : ""}`, { headers: headers() }))).json(); },
   async mounts(): Promise<HostMount[]> { return (await check(await fetch(`${BASE}/mounts`, { headers: headers() }))).json(); },
   async hostEntries(id: string, path: string): Promise<HostEntry[]> { return (await check(await fetch(`${BASE}/mounts/${encodeURIComponent(id)}/entries?path=${encodeURIComponent(path)}`, { headers: headers() }))).json(); },
   async importHost(id: string, path: string, destination: string): Promise<WriteOutcome> { return (await check(await fetch(`${BASE}/mounts/${encodeURIComponent(id)}/import`, json("POST", { path, destination })))).json(); },

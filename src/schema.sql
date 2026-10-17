@@ -96,3 +96,9 @@ INSERT OR IGNORE INTO transfer_history (id, actor, path, size, received, status,
 CREATE TABLE IF NOT EXISTS host_mounts (
     id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, root TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS activity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL,
+    method TEXT NOT NULL, route TEXT NOT NULL, status INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);

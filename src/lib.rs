@@ -3,6 +3,7 @@ pub mod api;
 pub mod archive;
 pub mod storage;
 pub mod mounts;
+pub mod activity;
 pub mod auth;
 pub mod blob;
 pub mod cli;
@@ -48,6 +49,7 @@ pub fn app_with_auth(
     secure_cookie: bool,
 ) -> Router {
     let password_mode = admin_password.as_ref().is_some_and(|s| !s.is_empty());
+    let audit_svc = svc.clone();
     let mcp_svc = svc.clone();
     let mcp = StreamableHttpService::new(
         move || Ok(mcp::DrawerMcp::new(mcp_svc.clone()).with_verified_admin(password_mode)),
@@ -60,7 +62,8 @@ pub fn app_with_auth(
         .route("/s/{token}", axum::routing::get(api::download_shared).with_state(svc.clone()))
         .nest("/drawer/v1", api::router().with_state(svc).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)))
         .nest_service("/mcp", mcp)
-        .layer(middleware::from_fn(session_delete_ok));
+        .layer(middleware::from_fn(session_delete_ok))
+        .layer(middleware::from_fn_with_state(audit_svc.clone(), activity::record));
     if let Some(password) = admin_password.filter(|s| !s.is_empty()) {
         let gate = auth::AuthGate::new(password, token, secure_cookie);
         app = app.merge(
@@ -68,7 +71,8 @@ pub fn app_with_auth(
                 .route("/auth/login", axum::routing::post(auth::login))
                 .route("/auth/logout", axum::routing::post(auth::logout))
                 .route("/auth/me", axum::routing::get(auth::me))
-                .with_state(gate.clone()),
+                .with_state(gate.clone())
+                .layer(middleware::from_fn_with_state(audit_svc, activity::record)),
         );
         app = app.layer(middleware::from_fn(move |mut req: Request, next: Next| {
             let gate = gate.clone();

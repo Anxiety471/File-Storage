@@ -754,3 +754,26 @@ async fn host_mount_browse_import_and_containment() {
     let protected = drawer::app_with_auth(Drawer::open(dir.path()).await.unwrap(), None, None, Some("password".into()), false);
     assert_eq!(send(&protected, get("/drawer/v1/mounts")).await.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn activity_records_login_failures_changes_and_redacts_secrets() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Drawer::open(dir.path()).await.unwrap();
+    let app = drawer::app_with_auth(s, Some("machine-secret".into()), None, Some("password".into()), false);
+    assert_eq!(send(&app, json_post("/auth/login", json!({"password":"wrong-secret"}))).await.status(), StatusCode::UNAUTHORIZED);
+    let request = Request::put("/drawer/v1/files?path=/audit.txt").header("authorization","Bearer machine-secret").header("x-drawer-author","spoof").body(Body::from("body-secret")).unwrap();
+    assert_eq!(send(&app, request).await.status(), StatusCode::OK);
+    let link_secret = "a".repeat(64);
+    assert_eq!(send(&app, get(&format!("/s/{link_secret}"))).await.status(), StatusCode::NOT_FOUND);
+    let read = |suffix: &str| Request::get(format!("/drawer/v1/activity{suffix}")).header("authorization","Bearer machine-secret").body(Body::empty()).unwrap();
+    let events = json_of(send(&app, read("?limit=2")).await).await;
+    assert_eq!(events.as_array().unwrap().len(),2);
+    assert_eq!(events[0]["route"], "/s/{token}");
+    assert_eq!(events[1]["actor"], "admin");
+    let before = events[1]["id"].as_i64().unwrap();
+    let earlier = json_of(send(&app, read(&format!("?before={before}"))).await).await;
+    assert_eq!(earlier[0]["route"], "/auth/login");
+    assert_eq!(earlier[0]["status"],401);
+    let all = format!("{events}{earlier}");
+    for secret in ["machine-secret", "wrong-secret", "body-secret", &link_secret] { assert!(!all.contains(secret)); }
+}

@@ -1,3 +1,4 @@
+import { ActivityPanel } from "./ActivityPanel";
 import { MountsPanel } from "./MountsPanel";
 import { StoragePanel } from "./StoragePanel";
 import { TransfersPanel } from "./TransfersPanel";
@@ -145,6 +146,7 @@ export function App() {
   const [file, setFile] = useState<string | null>(initial.file);
   const [dirty, setDirty] = useState(false);
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  const [activityManager, setActivityManager] = useState(false);
   const [mountManager, setMountManager] = useState(false);
   const [storageManager, setStorageManager] = useState(false);
   const [transferManager, setTransferManager] = useState(false);
@@ -698,6 +700,7 @@ export function App() {
           {navItem("recent", "clock", "Recent")}
           {navItem("starred", "star", "Starred")}
           {navItem("trash", "trash", "Trash")}
+          <button type="button" className="nav" onClick={() => setActivityManager(true)}><Icon name="clock" /><span className="nav-label">Activity history</span></button>
           <button type="button" className="nav" onClick={() => setMountManager(true)}><Icon name="folder" /><span className="nav-label">Host folders</span></button>
           <button type="button" className="nav" onClick={() => setStorageManager(true)}><Icon name="folder" /><span className="nav-label">Storage</span></button>
           <button type="button" className="nav" title="Transfers" onClick={() => setTransferManager(true)}><Icon name="upload" /><span className="nav-label">Transfers</span></button>
@@ -848,6 +851,7 @@ export function App() {
         </main>
       </div>
 
+      {activityManager && <ActivityPanel close={() => setActivityManager(false)} />}
       {mountManager && <MountsPanel close={() => { setMountManager(false); void refresh(); }} />}
       {storageManager && <StoragePanel close={() => setStorageManager(false)} />}
       {transferManager && <TransfersPanel close={() => setTransferManager(false)} />}

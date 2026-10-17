@@ -307,3 +307,15 @@ Symlinks are omitted from directory listings. Only register directories you inte
 to expose to every authenticated operator of this instance. Container deployments
 must bind-mount the directory into the container first. This exposes host folders
 inside Drawer; it does not provide an operating-system FUSE mount.
+
+### Activity history
+
+The sidebar's **Activity history** records REST changes, file reads, public share
+requests, logins (including failures), and MCP transport requests. Events persist
+in SQLite and can be paginated with `GET /drawer/v1/activity?before=ID&limit=100`.
+Routine listing/polling is excluded. Only method, route template, actor, HTTP status
+and time are stored: no request bodies, query strings, credentials or link tokens.
+MCP entries describe transport requests, not individual tool calls. HTTP success
+means a response was issued, not that a browser completed its download. CLI writes
+are not included. Events are retained until the operator prunes the database;
+this local history is best-effort and is not a tamper-proof compliance log.
