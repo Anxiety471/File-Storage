@@ -754,3 +754,15 @@ async fn host_mount_browse_import_and_containment() {
     let protected = drawer::app_with_auth(Drawer::open(dir.path()).await.unwrap(), None, None, Some("password".into()), false);
     assert_eq!(send(&protected, get("/drawer/v1/mounts")).await.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn archive_rejects_names_that_windows_extractors_treat_as_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Drawer::open(dir.path()).await.unwrap();
+    for path in ["/..\\escape.txt", "/C:drive.txt", "/.. /escape.txt"] {
+        let file = s.write(path, b"safe contents", drawer::service::WriteOpts::new("api", "")).await.unwrap();
+        let app = drawer::app(s.clone(), None, None);
+        let response = send(&app, get(&format!("/drawer/v1/archive?ids={}", file.node.id))).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+    }
+}
