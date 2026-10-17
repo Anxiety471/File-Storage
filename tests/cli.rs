@@ -450,3 +450,15 @@ fn userprofile_is_used_when_home_is_empty() {
     assert!(home.join(".drawer/drawer.db").is_file());
     assert!(!tmp.path().join(".drawer").exists());
 }
+
+#[test]
+fn service_install_writes_unit_without_starting_or_creating_store() {
+    if !cfg!(target_os = "linux") { return; }
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    ok(standalone(&home, tmp.path(), &["service", "install", "--no-start"]).output().unwrap());
+    let unit = std::fs::read_to_string(home.join(".config/systemd/user/drawer.service")).unwrap();
+    assert!(unit.contains(home.join(".drawer").to_str().unwrap()));
+    assert!(!home.join(".drawer").exists());
+    fail(standalone(&home, tmp.path(), &["service", "install", "--no-start"]).output().unwrap());
+}

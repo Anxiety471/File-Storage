@@ -268,3 +268,9 @@ cargo run --release -- serve       # API, MCP and UI on http://127.0.0.1:8787
 CI runs clippy, the Rust tests and the UI build on every push to `main` and every pull request.
 
 Releases: pushing a `v*` tag builds Linux (x86_64, aarch64) and macOS (x86_64, aarch64) binaries and attaches them with `SHA256SUMS` (`.github/workflows/release.yml`).
+
+## Linux background service
+
+`drawer service install` installs and starts a per-user systemd service using your current binary and configured store. Use `--no-start` to write the unit for review, then `systemctl --user daemon-reload && systemctl --user enable --now drawer`. Existing units are never overwritten. `drawer service start|stop|status|uninstall` manages it; uninstall leaves your data in place.
+
+Put `DRAWER_ADMIN_PASSWORD` and `DRAWER_TOKEN` in `~/.config/drawer/env` (create the parent directory and use `chmod 600` on the file) before starting. Do not put secrets in the service unit. Logs: `journalctl --user -u drawer`. To run after logout and at boot, enable user lingering with `loginctl enable-linger "$USER"` if your administrator permits it. Docker deployments should continue using Compose restart policies.

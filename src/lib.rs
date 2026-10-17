@@ -3,6 +3,7 @@ pub mod api;
 pub mod auth;
 pub mod blob;
 pub mod cli;
+pub mod background;
 pub mod error;
 pub mod links;
 pub mod transfers;
