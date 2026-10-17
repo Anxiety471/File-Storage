@@ -528,3 +528,15 @@ async fn public_link_can_pin_a_revision() {
     assert!(s.create_download_link_with_revision(&first.node.id, "alice", 7, Some(999)).await.is_err());
     assert_eq!(s.list_download_links(&first.node.id, "alice").await.unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn one_download_link_admits_only_one_concurrent_request() {
+    let (s, _dir) = store().await;
+    let file = s.write("/one.txt", b"one", by("alice", "")).await.unwrap();
+    let link = s.create_download_link_with_options(&file.node.id, "alice", 7, None, Some(1)).await.unwrap();
+    let (a, b) = tokio::join!(s.download_link_file(&link.token), s.download_link_file(&link.token));
+    assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+    let listed = s.list_download_links(&file.node.id, "alice").await.unwrap();
+    assert_eq!(listed[0].downloads, 1);
+    assert!(s.create_download_link_with_options(&file.node.id, "alice", 7, None, Some(0)).await.is_err());
+}

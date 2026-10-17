@@ -114,6 +114,7 @@ struct ShareBody {
 
 #[derive(Deserialize)]
 struct LinkBody {
+    max_downloads: Option<i64>,
     expires_in_days: Option<i64>,
     revision: Option<i64>,
 }
@@ -419,7 +420,7 @@ async fn create_link(
     headers: HeaderMap,
     Json(body): Json<LinkBody>,
 ) -> Result<Json<Value>> {
-    Ok(out(s.create_download_link_with_revision(&id, &actor(&headers), body.expires_in_days.unwrap_or(7), body.revision).await?))
+    Ok(out(s.create_download_link_with_options(&id, &actor(&headers), body.expires_in_days.unwrap_or(7), body.revision, body.max_downloads).await?))
 }
 
 async fn list_links(State(s): State<Drawer>, Path(id): Path<String>, headers: HeaderMap) -> Result<Json<Value>> {

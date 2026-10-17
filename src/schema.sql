@@ -70,3 +70,9 @@ CREATE TABLE IF NOT EXISTS download_link_revisions (
     link_id TEXT PRIMARY KEY REFERENCES download_links(id) ON DELETE CASCADE,
     revision INTEGER NOT NULL CHECK (revision > 0)
 );
+
+CREATE TABLE IF NOT EXISTS download_link_limits (
+    link_id TEXT PRIMARY KEY REFERENCES download_links(id) ON DELETE CASCADE,
+    max_downloads INTEGER NOT NULL CHECK (max_downloads > 0),
+    downloads INTEGER NOT NULL DEFAULT 0 CHECK (downloads >= 0)
+);

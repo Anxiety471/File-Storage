@@ -59,6 +59,8 @@ export interface SearchHit {
 }
 
 export interface DownloadLink {
+  max_downloads: number | null;
+  downloads: number;
   revision: number | null;
   id: string;
   created_at: string;
@@ -343,8 +345,8 @@ export const api = {
     const r = await check(await fetch(`${BASE}/nodes/${encodeURIComponent(id)}/links`, { headers: headers() }));
     return (await r.json()).links;
   },
-  async createLink(id: string, days = 7, revision?: number): Promise<CreatedDownloadLink> {
-    const r = await check(await fetch(`${BASE}/nodes/${encodeURIComponent(id)}/links`, json("POST", { expires_in_days: days, revision })));
+  async createLink(id: string, days = 7, revision?: number, maxDownloads?: number): Promise<CreatedDownloadLink> {
+    const r = await check(await fetch(`${BASE}/nodes/${encodeURIComponent(id)}/links`, json("POST", { expires_in_days: days, revision, max_downloads: maxDownloads })));
     return r.json();
   },
   async revokeLink(id: string, linkId: string): Promise<void> {

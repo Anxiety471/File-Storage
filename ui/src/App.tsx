@@ -1493,6 +1493,7 @@ function ShareLinksDialog({
   close: () => void;
   notify: (message: string, tone?: "ok" | "error") => void;
 }) {
+  const [downloadLimit, setDownloadLimit] = useState("");
   const [pinRevision, setPinRevision] = useState(false);
   const [links, setLinks] = useState<DownloadLink[]>([]);
   const [newUrl, setNewUrl] = useState("");
@@ -1521,7 +1522,7 @@ function ShareLinksDialog({
   };
 
   const create = () => perform(async () => {
-    const link = await api.createLink(node.id, 7, pinRevision ? node.head_revision ?? undefined : undefined);
+    const link = await api.createLink(node.id, 7, pinRevision ? node.head_revision ?? undefined : undefined, downloadLimit ? Number(downloadLimit) : undefined);
     setNewUrl(`${window.location.origin}/s/${link.token}`);
     setLinks(await api.links(node.id));
     notify("Link created. Copy it now; Drawer will not display this secret again.");
@@ -1551,6 +1552,7 @@ function ShareLinksDialog({
           Anyone with the link can download this file for 7 days without your Drawer access token.
           Choose whether the link follows the latest version or stays on the current revision. Revoke it to disable access.
         </p>
+        <label>Download limit (blank for unlimited)<input type="number" min="1" max="1000000" value={downloadLimit} onChange={(e) => setDownloadLimit(e.target.value)} /></label>
         <label><span><input type="checkbox" checked={pinRevision} onChange={(e) => setPinRevision(e.target.checked)} /> Keep this link on revision {node.head_revision}</span></label>
         <div className="modal-actions">
           <button type="button" className="btn primary" disabled={busy || loading} onClick={create}>
@@ -1572,7 +1574,7 @@ function ShareLinksDialog({
             {links.map((link) => (
               <li key={link.id}>
                 <span className="muted small">
-                  {link.revision ? `Revision ${link.revision} · ` : "Latest version · "}{new Date(link.expires_at).getTime() < Date.now() ? "Expired" : "Expires"}: {new Date(link.expires_at).toLocaleString()}
+                  {link.max_downloads ? `${Math.max(0, link.max_downloads - link.downloads)} downloads left · ` : ""}{link.revision ? `Revision ${link.revision} · ` : "Latest version · "}{new Date(link.expires_at).getTime() < Date.now() ? "Expired" : "Expires"}: {new Date(link.expires_at).toLocaleString()}
                 </span>
                 <button type="button" className="btn danger" disabled={busy} onClick={() => revoke(link.id)}>Revoke</button>
               </li>
