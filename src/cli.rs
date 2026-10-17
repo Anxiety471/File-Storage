@@ -30,9 +30,9 @@ const DB_FILE: &str = "drawer.db";
         server. Paths look like /notes/todo.md. Use `drawer mcp-config` to wire up Hermes or another client."
 )]
 pub struct Cli {
-    /// Store directory, holding drawer.db and blobs/.
-    #[arg(long, env = "DRAWER_DATA_DIR", default_value = "./data", global = true, value_name = "DIR")]
-    data_dir: PathBuf,
+    /// Store directory, holding drawer.db and blobs/ (default: ~/.drawer).
+    #[arg(long, env = "DRAWER_DATA_DIR", global = true, value_name = "DIR")]
+    data_dir: Option<PathBuf>,
     /// Name recorded as the author of changes. Defaults to $USER.
     #[arg(long, env = "DRAWER_AUTHOR", global = true, value_name = "NAME")]
     author: Option<String>,
@@ -286,10 +286,6 @@ pub async fn run() -> ExitCode {
 
 async fn dispatch(cli: Cli) -> Result<()> {
     let cmd = cli.cmd.unwrap_or_else(|| Cmd::Serve(ServeArgs::from_env()));
-    if let Cmd::McpConfig { format, url, name } = &cmd {
-        print!("{}", mcp_config(*format, &cli.data_dir, url.as_deref(), name)?);
-        return Ok(());
-    }
     if let Cmd::Update { check } = &cmd {
         // Works on the install, not the store, so it runs before the store check below.
         return crate::update::run(*check);
@@ -299,6 +295,16 @@ async fn dispatch(cli: Cli) -> Result<()> {
         clap_complete::generate(*shell, &mut command, "drawer", &mut std::io::stdout());
         return Ok(());
     }
+    // Resolve only for commands that use a store. Help, completions and self-update
+    // must also work in minimal environments without a home directory.
+    let data_dir = match cli.data_dir {
+        Some(path) => path,
+        None => default_data_dir()?,
+    };
+    if let Cmd::McpConfig { format, url, name } = &cmd {
+        print!("{}", mcp_config(*format, &data_dir, url.as_deref(), name)?);
+        return Ok(());
+    }
     if matches!(cmd, Cmd::Serve(_) | Cmd::Stdio) {
         // Logs go to stderr so stdio MCP keeps stdout clean.
         tracing_subscriber::fmt().with_writer(std::io::stderr).init();
@@ -306,20 +312,20 @@ async fn dispatch(cli: Cli) -> Result<()> {
     // Only these start a store. Everything else needs one already there, so a typo in
     // --data-dir fails loudly instead of quietly creating an empty store.
     let creates = matches!(cmd, Cmd::Serve(_) | Cmd::Stdio | Cmd::Put(_) | Cmd::Mkdir { .. });
-    if !creates && !cli.data_dir.join(DB_FILE).exists() {
+    if !creates && !data_dir.join(DB_FILE).exists() {
         bail!(
             "no store at {}; set --data-dir or DRAWER_DATA_DIR, or start one with `drawer serve` or `drawer put`",
-            absolute(&cli.data_dir).display()
+            absolute(&data_dir).display()
         );
     }
 
-    let svc = Drawer::open(&cli.data_dir).await?;
+    let svc = Drawer::open(&data_dir).await?;
     // MCP over stdio records the client's own name unless an author was set explicitly.
     let mcp_author = cli.author.clone();
     let actor = cli.author.unwrap_or_else(default_author);
     let json = cli.json;
     match cmd {
-        Cmd::Serve(args) => serve(svc, &cli.data_dir, args).await,
+        Cmd::Serve(args) => serve(svc, &data_dir, args).await,
         Cmd::Stdio => {
             use rmcp::ServiceExt;
             let running = crate::mcp::DrawerMcp::new(svc).with_author(mcp_author).serve(rmcp::transport::stdio()).await?;
@@ -569,7 +575,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
             let grants = svc.unshare(&node.id, &principal, &actor).await?;
             if json { emit_json(&grants) } else { println!("removed {principal} from {}", node.path); Ok(()) }
         }
-        Cmd::Doctor => doctor(&svc, &cli.data_dir, json).await,
+        Cmd::Doctor => doctor(&svc, &data_dir, json).await,
         Cmd::McpConfig { .. } | Cmd::Completions { .. } | Cmd::Update { .. } => {
             unreachable!("handled before the store is opened")
         }
@@ -889,6 +895,17 @@ fn leaf(path: &str) -> &str {
 
 fn absolute(p: &Path) -> PathBuf {
     std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// Keep the standalone store independent of the directory Drawer is launched from.
+fn default_data_dir() -> Result<PathBuf> {
+    ["HOME", "USERPROFILE"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .find(|home| home.is_absolute())
+        .map(|home| home.join(".drawer"))
+        .ok_or_else(|| anyhow!("cannot determine home directory; set --data-dir or DRAWER_DATA_DIR"))
 }
 
 fn default_author() -> String {

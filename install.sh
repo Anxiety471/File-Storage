@@ -124,7 +124,7 @@ main() {
     *) say "add $PREFIX/bin to your PATH, e.g.: export PATH=\"$PREFIX/bin:\$PATH\"" ;;
   esac
   say "start it with: drawer serve   (then open http://127.0.0.1:8787)"
-  say "data goes to ./data unless you pass --data-dir or set DRAWER_DATA_DIR"
+  say "data goes to ~/.drawer unless you pass --data-dir or set DRAWER_DATA_DIR"
 }
 
 main "$@"

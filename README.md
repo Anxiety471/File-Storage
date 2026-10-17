@@ -30,7 +30,28 @@ The installer downloads the release for your machine, checks its SHA-256, and pu
 
 To update an install, run `drawer update`. It fetches the latest release for your machine, checks its SHA-256 against `SHA256SUMS`, and replaces the binary and the UI in place. `drawer update --check` only reports whether a newer release exists. Restart `drawer serve` afterwards to run the new version. The store is never touched. The web UI shows an **Update to vX** button in the top bar when a newer release exists; it asks first, then runs the same update.
 
-Then point an agent at it. `drawer mcp-config --format <harness>` prints the exact config for Hermes, Claude Code, Codex, Gemini CLI, VS Code, opencode, or any client that takes an `mcpServers` JSON block. See [MCP and agent harnesses](#mcp-and-agent-harnesses).
+Drawer runs on its own; Hermes or another agent harness is optional. By default,
+all store commands use `~/.drawer`, regardless of your current working directory:
+
+| Path | Contents |
+| --- | --- |
+| `~/.drawer/drawer.db` | File metadata, revisions and download links |
+| `~/.drawer/blobs/` | Content-addressed file contents |
+| `~/.drawer/transfers/` | Temporary resumable uploads |
+
+Override the location with `drawer --data-dir /path/to/store serve` or
+`DRAWER_DATA_DIR=/path/to/store drawer serve`. The flag takes precedence over the
+variable. If no absolute home directory is available through `HOME` or
+`USERPROFILE`, set one of these explicit overrides. Docker Compose already sets
+`DRAWER_DATA_DIR=/data` and continues using its named volume.
+
+**Existing stores:** older versions defaulted to `./data`. This change does not
+move or delete that directory. Keep using it with an absolute path, for example
+`drawer --data-dir /home/you/old-project/data serve`. Back up the complete store
+(database, WAL files if present, blobs and transfers) before relocating it while
+all Drawer writers are stopped. Never copy just the uploaded files or database.
+
+Optionally, point an agent at it. `drawer mcp-config --format <harness>` prints the exact config for Hermes, Claude Code, Codex, Gemini CLI, VS Code, opencode, or any client that takes an `mcpServers` JSON block. See [MCP and agent harnesses](#mcp-and-agent-harnesses).
 
 ## Features
 
@@ -100,7 +121,7 @@ drawer purge <id> --yes                   # gone for good
 | Search and stars | `search`, `star`, `unstar`, `starred` |
 | Sharing | `perms`, `share <path> <principal> <role>`, `unshare <path> <principal>` |
 
-Global flags: `--data-dir` (`DRAWER_DATA_DIR`, default `./data`), `--author` (`DRAWER_AUTHOR`, default `$USER`) which is recorded on every change, and `--json` for machine-readable output from commands that return data.
+Global flags: `--data-dir` (`DRAWER_DATA_DIR`, default `~/.drawer`), `--author` (`DRAWER_AUTHOR`, default `$USER`) which is recorded on every change, and `--json` for machine-readable output from commands that return data.
 
 `drawer doctor` checks database integrity, counts, missing blob files and whether the UI is built. `drawer completions bash|zsh|fish|powershell|elvish` prints a shell completion script.
 
@@ -224,7 +245,7 @@ The REST API, MCP server, CLI and UI all call the same service layer, so they ag
 
 | Variable | Used by | Default |
 | --- | --- | --- |
-| `DRAWER_DATA_DIR` | all store commands | `./data` |
+| `DRAWER_DATA_DIR` | all store commands | `~/.drawer` |
 | `DRAWER_ADDR` | `serve` | `127.0.0.1:8787` |
 | `DRAWER_TOKEN` | `serve` | unset (an empty value counts as unset) |
 | `DRAWER_UI_DIR` | `serve` | `./ui/dist`, then `../share/drawer/ui` beside the binary |
