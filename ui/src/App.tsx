@@ -1,3 +1,4 @@
+import { TransfersPanel } from "./TransfersPanel";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, Diff, DownloadLink, Node, Revision, SearchHit, setToken, UNAUTHORIZED_EVENT, AUTHENTICATED_EVENT, UpdateStatus } from "./api";
 import { Badge, extOf, fileType, isTextViewer } from "./filetypes";
@@ -142,6 +143,7 @@ export function App() {
   const [file, setFile] = useState<string | null>(initial.file);
   const [dirty, setDirty] = useState(false);
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  const [transferManager, setTransferManager] = useState(false);
   const [shareTarget, setShareTarget] = useState<Node | null>(null);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [toast, setToast] = useState<Toast | null>(null);
@@ -695,6 +697,7 @@ export function App() {
           {navItem("recent", "clock", "Recent")}
           {navItem("starred", "star", "Starred")}
           {navItem("trash", "trash", "Trash")}
+          <button type="button" className="nav" title="Transfers" onClick={() => setTransferManager(true)}><Icon name="upload" /><span className="nav-label">Transfers</span></button>
         </nav>
 
         <input
@@ -842,6 +845,7 @@ export function App() {
         </main>
       </div>
 
+      {transferManager && <TransfersPanel close={() => setTransferManager(false)} />}
       {shareTarget && (
         <ShareLinksDialog node={shareTarget} close={() => setShareTarget(null)} notify={notify} />
       )}

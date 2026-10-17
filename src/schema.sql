@@ -76,3 +76,18 @@ CREATE TABLE IF NOT EXISTS download_link_limits (
     max_downloads INTEGER NOT NULL CHECK (max_downloads > 0),
     downloads INTEGER NOT NULL DEFAULT 0 CHECK (downloads >= 0)
 );
+
+CREATE TABLE IF NOT EXISTS transfer_history (
+    id TEXT PRIMARY KEY, actor TEXT NOT NULL, path TEXT NOT NULL,
+    size INTEGER NOT NULL, received INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL, direction TEXT NOT NULL DEFAULT 'upload',
+    error TEXT, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS transfer_history_actor ON transfer_history(actor, updated_at);
+
+CREATE TRIGGER IF NOT EXISTS transfers_track_insert AFTER INSERT ON transfers BEGIN
+    INSERT OR IGNORE INTO transfer_history (id, actor, path, size, received, status, updated_at)
+        VALUES (NEW.id, NEW.actor, NEW.path, NEW.size, NEW.received, 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+END;
+INSERT OR IGNORE INTO transfer_history (id, actor, path, size, received, status, updated_at)
+    SELECT id, actor, path, size, received, 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM transfers;

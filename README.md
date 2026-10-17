@@ -280,3 +280,7 @@ Browser uploads compute SHA-256 incrementally in a worker before sending chunks,
 Public links can be fixed to a specific revision: select **Keep this link on revision N** in the share dialog, or provide `revision` when creating a link over REST. Later edits do not change that link's contents. Default links continue following the latest head. Trash, expiry and revocation apply to both modes.
 
 Share links optionally accept a download limit (1–1,000,000) from the dialog or `max_downloads` in REST. A request consumes a use when an authorized download is issued, even if the recipient cancels the stream. Exhausted links return 404. Concurrent requests reserve uses atomically; blank means unlimited.
+
+## Transfer manager
+
+Open **Transfers** in the sidebar to see active, paused, failed, expired, cancelled and completed uploads. Pause, select the same file to resume/retry, or cancel its staging data. Metadata and progress survive restarts; an expired lease cannot be resumed. The last 200 entries for your actor are shown. Authenticated download requests appear as **issued**; your browser's native download manager owns their completion and retry state.

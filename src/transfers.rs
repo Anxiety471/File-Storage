@@ -110,6 +110,9 @@ pub async fn append(
     if received + data.len() as i64 > size {
         return Err(Error::Invalid("chunk exceeds transfer size".into()));
     }
+    let paused: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM transfer_history WHERE id = ? AND status = 'paused')")
+        .bind(&id).fetch_one(&s.pool).await?;
+    if paused { return Err(Error::Conflict("transfer is paused; resume it before appending".into())); }
     let path = partial_path(&s, &id);
     let mut file = tokio::fs::OpenOptions::new().write(true).open(&path).await?;
     let disk_size = file.metadata().await?.len();
@@ -145,7 +148,11 @@ pub async fn complete(
     let sha256: Option<String> = row.get("sha256");
     let mut opts = WriteOpts::new(who, "resumable upload");
     opts.if_head_revision = row.get("if_head_revision");
-    let saved = s.write_staged(&filename, &path, opts, sha256.as_deref()).await?;
+    let saved = match s.write_staged(&filename, &path, opts, sha256.as_deref()).await {
+        Ok(saved) => saved,
+        Err(error) => { history_state(&s, &id, "failed", Some(error.to_string())).await?; return Err(error); }
+    };
+    history_state(&s, &id, "completed", None).await?;
     sqlx::query("DELETE FROM transfers WHERE id = ?").bind(&id).execute(&s.pool).await?;
     tokio::fs::remove_file(path).await?;
     Ok(Json(serde_json::to_value(saved).expect("serializable")))
@@ -155,6 +162,7 @@ pub async fn cancel(
 ) -> Result<Json<Value>> {
     let _guard = s.transfer_lock.lock().await;
     owned(&s, &id, &actor(&headers)).await?;
+    history_state(&s, &id, "cancelled", None).await?;
     sqlx::query("DELETE FROM transfers WHERE id = ?").bind(&id).execute(&s.pool).await?;
     match tokio::fs::remove_file(partial_path(&s, &id)).await {
         Ok(_) => {}
@@ -181,9 +189,38 @@ impl Drawer {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e.into()),
             }
+            history_state(self, &id, "expired", None).await?;
             sqlx::query("DELETE FROM transfers WHERE id = ?").bind(&id).execute(&self.pool).await?;
             cleaned += 1;
         }
         Ok(cleaned)
+    }
+}
+
+async fn history_state(s: &Drawer, id: &str, status: &str, error: Option<String>) -> Result<()> {
+    sqlx::query("UPDATE transfer_history SET status = ?, error = ?, received = COALESCE((SELECT received FROM transfers WHERE id = ?), received), updated_at = ? WHERE id = ?")
+        .bind(status).bind(error).bind(id).bind(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)).bind(id).execute(&s.pool).await?;
+    Ok(())
+}
+
+#[derive(Deserialize)]
+pub struct ChangeTransfer { status: String }
+pub async fn change(State(s): State<Drawer>, UrlPath(id): UrlPath<String>, headers: HeaderMap, Json(body): Json<ChangeTransfer>) -> Result<Json<Value>> {
+    if !["paused", "active"].contains(&body.status.as_str()) { return Err(Error::Invalid("status must be paused or active".into())); }
+    let _guard = s.transfer_lock.lock().await;
+    owned(&s, &id, &actor(&headers)).await?;
+    history_state(&s, &id, &body.status, None).await?;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn list(State(s): State<Drawer>, headers: HeaderMap) -> Result<Json<Value>> {
+    let rows = sqlx::query("SELECT h.id, h.path, h.size, COALESCE(t.received,h.received) AS received, h.status, h.direction, h.error, h.updated_at FROM transfer_history h LEFT JOIN transfers t ON t.id = h.id WHERE h.actor = ? ORDER BY h.updated_at DESC LIMIT 200")
+        .bind(actor(&headers)).fetch_all(&s.pool).await?;
+    Ok(Json(json!({"transfers":rows.iter().map(|r| json!({"id":r.get::<String,_>("id"),"path":r.get::<String,_>("path"),"size":r.get::<i64,_>("size"),"received":r.get::<i64,_>("received"),"status":r.get::<String,_>("status"),"direction":r.get::<String,_>("direction"),"error":r.get::<Option<String>,_>("error"),"updated_at":r.get::<String,_>("updated_at")})).collect::<Vec<_>>()})))
+}
+impl Drawer {
+    pub async fn record_download(&self, actor: &str, path: &str, size: i64) -> Result<()> {
+        sqlx::query("INSERT INTO transfer_history (id, actor, path, size, status, direction, updated_at) VALUES (?, ?, ?, ?, 'issued', 'download', ?)")
+            .bind(Uuid::new_v4().to_string()).bind(actor).bind(path).bind(size).bind(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)).execute(&self.pool).await?;
+        Ok(())
     }
 }

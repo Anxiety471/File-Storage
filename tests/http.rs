@@ -656,3 +656,24 @@ async fn updater_requires_password_authentication() {
     let install = Request::post("/drawer/v1/update").body(Body::empty()).unwrap();
     assert_eq!(send(&app, install).await.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn transfer_manager_tracks_pause_resume_completion_and_owner() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = drawer::app(Drawer::open(dir.path()).await.unwrap(), None, None);
+    let transfer = json_of(send(&app, json_post("/drawer/v1/transfers", json!({"path":"/tracked.txt","size":3}))).await).await;
+    let path = format!("/drawer/v1/transfers/{}", transfer["id"].as_str().unwrap());
+    let paused = Request::patch(&path).header("content-type", "application/json").body(Body::from(r#"{"status":"paused"}"#)).unwrap();
+    assert_eq!(send(&app, paused).await.status(), StatusCode::OK);
+    let chunk = || Request::put(&path).header("x-upload-offset","0").body(Body::from("abc")).unwrap();
+    assert_eq!(send(&app, chunk()).await.status(), StatusCode::CONFLICT);
+    let resumed = Request::patch(&path).header("content-type", "application/json").body(Body::from(r#"{"status":"active"}"#)).unwrap();
+    assert_eq!(send(&app, resumed).await.status(), StatusCode::OK);
+    assert_eq!(send(&app, chunk()).await.status(), StatusCode::OK);
+    assert_eq!(send(&app, Request::post(format!("{path}/complete")).body(Body::empty()).unwrap()).await.status(), StatusCode::OK);
+    let history = json_of(send(&app, get("/drawer/v1/transfers")).await).await;
+    assert_eq!(history["transfers"][0]["status"], "completed");
+    assert_eq!(history["transfers"][0]["received"], 3);
+    let other = Request::get("/drawer/v1/transfers").header("x-drawer-author", "other").body(Body::empty()).unwrap();
+    assert_eq!(json_of(send(&app, other).await).await["transfers"].as_array().unwrap().len(),0);
+}

@@ -240,13 +240,14 @@ export const api = {
     file: File,
     onProgress: (done: number, total: number) => void,
     signal?: AbortSignal,
+    transferId?: string,
   ): Promise<WriteOutcome> {
     onProgress(0, file.size);
     const sha256 = await uploadChecksum(file, signal);
     const key = `drawer:transfer:v2:${path}:${sha256}`;
     const opts = { headers: headers() };
-    let id: string | null = null;
-    try { id = localStorage.getItem(key); } catch { /* Storage may be blocked. */ }
+    let id: string | null = transferId ?? null;
+    try { id ??= localStorage.getItem(key); } catch { /* Storage may be blocked. */ }
     let offset = 0;
     if (id) {
       try {
@@ -254,7 +255,8 @@ export const api = {
         const state: { received: number; size: number; path: string; sha256: string | null } = await r.json();
         if (state.size !== file.size || state.path !== path || state.sha256 !== sha256) throw new Error("Upload changed");
         offset = state.received;
-      } catch {
+      } catch (error) {
+        if (transferId || !(error instanceof ApiError) || error.status !== 404) throw error;
         try { localStorage.removeItem(key); } catch { /* Optional resume cache. */ }
         id = null;
       }
@@ -265,6 +267,8 @@ export const api = {
       id = state.id;
       try { localStorage.setItem(key, id); } catch { /* Uploads still work without resume caching. */ }
     }
+    await api.changeTransfer(id, "active");
+    try {
     onProgress(offset, file.size);
     while (offset < file.size) {
       if (signal?.aborted) throw new DOMException("Upload paused", "AbortError");
@@ -287,6 +291,20 @@ export const api = {
     if (outcome.node.hash !== sha256) throw new Error("Server returned a different file checksum");
     try { localStorage.removeItem(key); } catch { /* Optional resume cache. */ }
     return outcome;
+    } catch (error) {
+      if (signal?.aborted) await api.changeTransfer(id, "paused").catch(() => {});
+      throw error;
+    }
+  },
+  async transfers(): Promise<TransferRecord[]> {
+    const r = await check(await fetch(`${BASE}/transfers`, { headers: headers() }));
+    return (await r.json()).transfers;
+  },
+  async changeTransfer(id: string, status: "paused" | "active"): Promise<void> {
+    await check(await fetch(`${BASE}/transfers/${encodeURIComponent(id)}`, json("PATCH", { status })));
+  },
+  async cancelTransfer(id: string): Promise<void> {
+    await check(await fetch(`${BASE}/transfers/${encodeURIComponent(id)}`, { method: "DELETE", headers: headers() }));
   },
   // Moves the file to the trash. Restore it from the Trash view.
   async trash(path: string): Promise<void> {
@@ -361,3 +379,5 @@ export const api = {
     return (await r.json()).hits;
   },
 };
+
+export interface TransferRecord { id: string; path: string; size: number; received: number; status: string; direction: string; error: string | null; updated_at: string }

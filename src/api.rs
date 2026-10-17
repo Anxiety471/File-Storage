@@ -179,8 +179,8 @@ pub fn router() -> Router<Drawer> {
         .route("/edit", post(edit))
         .route("/folders", post(mkdir).delete(delete_file))
         .route("/files", get(read_file).put(write_file).delete(delete_file))
-        .route("/transfers", post(crate::transfers::start))
-        .route("/transfers/{id}", get(crate::transfers::status).put(crate::transfers::append).layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024)).delete(crate::transfers::cancel))
+        .route("/transfers", get(crate::transfers::list).post(crate::transfers::start))
+        .route("/transfers/{id}", get(crate::transfers::status).patch(crate::transfers::change).put(crate::transfers::append).layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024)).delete(crate::transfers::cancel))
         .route("/transfers/{id}/complete", post(crate::transfers::complete))
         .route("/files/meta", get(meta))
         .route("/revisions", get(revisions))
@@ -325,6 +325,10 @@ async fn read_file(State(s): State<Drawer>, Query(q): Query<PathQ>, req: HeaderM
         file.seek(std::io::SeekFrom::Start(start)).await?;
     }
     let count = if total == 0 { 0 } else { end - start + 1 };
+    if q.download.unwrap_or(false) {
+        let node = s.stat(target(&q)?).await?;
+        s.record_download(&actor(&req), &node.path, rev.size).await?;
+    }
     let mut resp = Body::from_stream(ReaderStream::new(file.take(count))).into_response();
     if range.is_some() {
         *resp.status_mut() = axum::http::StatusCode::PARTIAL_CONTENT;
