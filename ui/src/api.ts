@@ -44,6 +44,16 @@ export interface SearchHit {
   line?: number;
 }
 
+export interface DownloadLink {
+  id: string;
+  created_at: string;
+  expires_at: string;
+}
+
+export interface CreatedDownloadLink extends DownloadLink {
+  token: string;
+}
+
 export interface Diff {
   path: string;
   from: number;
@@ -212,6 +222,17 @@ export const api = {
   async copy(id: string, to: string): Promise<WriteOutcome> {
     const r = await check(await fetch(`${BASE}/copy`, json("POST", { from_id: id, to, author: "ui", if_head_revision: 0 })));
     return r.json();
+  },
+  async links(id: string): Promise<DownloadLink[]> {
+    const r = await check(await fetch(`${BASE}/nodes/${encodeURIComponent(id)}/links`, { headers: headers() }));
+    return (await r.json()).links;
+  },
+  async createLink(id: string, days = 7): Promise<CreatedDownloadLink> {
+    const r = await check(await fetch(`${BASE}/nodes/${encodeURIComponent(id)}/links`, json("POST", { expires_in_days: days })));
+    return r.json();
+  },
+  async revokeLink(id: string, linkId: string): Promise<void> {
+    await check(await fetch(`${BASE}/nodes/${encodeURIComponent(id)}/links/${encodeURIComponent(linkId)}`, { method: "DELETE", headers: headers() }));
   },
   async trashed(): Promise<Node[]> {
     const r = await check(await fetch(`${BASE}/trash`, { headers: headers() }));

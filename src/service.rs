@@ -30,17 +30,17 @@ pub const ROOT_ID: &str = "root";
 
 const READER: u8 = 1;
 const WRITER: u8 = 2;
-const OWNER: u8 = 3;
+pub(crate) const OWNER: u8 = 3;
 
 pub type Properties = std::collections::BTreeMap<String, String>;
 
 #[derive(Clone)]
 pub struct Drawer {
-    pool: SqlitePool,
+    pub(crate) pool: SqlitePool,
     blobs: BlobStore,
     // Makes each check-then-write sequence one atomic step. Fine for the single-process server
     // this crate is; several processes sharing a store would need `BEGIN IMMEDIATE`.
-    write_lock: Arc<Mutex<()>>,
+    pub(crate) write_lock: Arc<Mutex<()>>,
 }
 
 /// How a caller names a node: by path (`/notes/todo.md`) or by its stable id.
@@ -688,7 +688,7 @@ impl Drawer {
 
     /// Role check: grants on the node or any ancestor apply. A node with no grants anywhere is
     /// open, and its owner always passes. This is cooperative: callers name themselves.
-    async fn authorize(&self, id: &str, actor: &str, need: u8) -> Result<()> {
+    pub(crate) async fn authorize(&self, id: &str, actor: &str, need: u8) -> Result<()> {
         let rows = sqlx::query(
             "WITH RECURSIVE anc(id) AS (SELECT ? UNION ALL SELECT n.parent_id FROM nodes n JOIN anc ON n.id = anc.id \
              WHERE n.parent_id IS NOT NULL) \
@@ -791,6 +791,17 @@ impl Drawer {
         let rev = self.revision_row(&node.id, revision).await?;
         let data = self.blobs.get(&rev.hash).await?;
         Ok((rev, data))
+    }
+
+    /// Resolve a file revision to its content-addressed on-disk path for streamed HTTP downloads.
+    pub async fn read_file_path(&self, r: Ref<'_>, revision: Option<i64>) -> Result<(Revision, std::path::PathBuf)> {
+        let node = self.resolve(r).await?;
+        let rev = self.revision_row(&node.id, revision).await?;
+        let path = self.blobs.path_for(&rev.hash)?;
+        if !tokio::fs::try_exists(&path).await? {
+            return Err(Error::Internal(format!("blob {} missing", rev.hash)));
+        }
+        Ok((rev, path))
     }
 
     async fn revision_row(&self, node_id: &str, revision: Option<i64>) -> Result<Revision> {

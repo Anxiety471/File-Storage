@@ -36,7 +36,8 @@ Then point an agent at it. `drawer mcp-config --format <harness>` prints the exa
 - **Trash.** Deleting moves things to the trash, with their history. Restore by id, or purge for good.
 - **Star, search, copy, move.** Star files and folders, search names and contents (name matches first, content matches with line numbers), and copy without re-uploading: copies share content by hash.
 - **Recent activity.** See which files changed last and which agent or person changed them.
-- **Sharing.** Grant `reader`, `writer` or `owner` on a folder and it covers everything below. A node with no grants is open.
+- **Download links.** Create a 7-day link from a file's menu and copy it to anyone who can reach your server. Links download only the latest file revision, expire automatically, and can be revoked in the UI. The database stores only hashes of the link secrets.
+- **Cooperative agent sharing.** Grant `reader`, `writer` or `owner` to an agent principal on a folder and it covers everything below. These grants are not user authentication; callers can self-declare their principal.
 - **Custom properties.** Key/value pairs stored with each revision.
 - **Any file type.** Stored byte-for-byte, up to 512 MB per upload.
 - **Previews in the UI.** PDF, Word (`.docx`), Excel (`.xlsx`, `.xls`, `.ods`), CSV/TSV, Markdown, HTML, images, audio and video. Text and source code are editable with syntax highlighting. Other types (`.doc`, `.pptx`, archives) download.
@@ -53,6 +54,7 @@ A Drive-style browser with My Drawer, Recent, Starred and Trash, a search box ov
 - **Organise.** Sort by name, modified or size; rename, move, copy and download from a row's menu (or right-click); trashing offers Undo.
 - **Links work.** The folder and open file are in the URL, so reload, back/forward and bookmarks do what you expect.
 - **Token prompt.** When the server runs with a token, the UI asks for it once and remembers it in the browser.
+- **Share a download.** Open a file's More actions menu, choose **Share download link**, then **Create 7-day link** and **Copy**. Reopen the menu to view expiry times or revoke an existing link. A secret is visible only when newly created, not later.
 
 <p align="center">
   <img src="docs/screenshots/history.png" alt="Version history for a Markdown file" width="860"><br>
@@ -179,6 +181,10 @@ Base path `/drawer/v1`. Nodes are named by `path=` or `id=`. Mutations name thei
 | GET | `/starred` | starred live nodes |
 | GET / PUT | `/nodes/{id}/permissions` | list grants; `PUT {"principal","role"}` (owner only) |
 | DELETE | `/nodes/{id}/permissions/{principal}` | remove a grant (owner only) |
+| POST | `/nodes/{id}/links` | `{"expires_in_days":7}` (1–30). Returns a one-time `token` for a read-only download link |
+| GET | `/nodes/{id}/links` | list link ids, creation/expiry times, but never the secret token |
+| DELETE | `/nodes/{id}/links/{link_id}` | revoke a download link |
+| GET | `/s/{token}` (outside `/drawer/v1`) | public attachment download, no instance bearer token needed; 404 when invalid, expired, revoked or trashed |
 | GET | `/search?q=` | names first, then contents with `line` and `snippet` |
 | GET | `/recent?limit=` | live files, most recently changed first, with `modified_by` |
 
@@ -198,6 +204,8 @@ integrations/    harness plugins, e.g. the Hermes drawer-mirror
 ```
 
 The REST API, MCP server, CLI and UI all call the same service layer, so they agree on permissions, revisions and the trash.
+
+**Security for download links.** Configure a strong `DRAWER_TOKEN` before using Drawer beyond a trusted local machine. The authenticated owner can create a public, read-only capability link which anyone possessing it can download until it expires or is revoked. A valid link does **not** give access to any REST API or MCP operation. Put Drawer behind HTTPS for sharing outside your private Tailscale network, and treat the URL as a password: avoid posting it in public logs or forwarding it accidentally. A link points at the latest revision and becomes unavailable while the file or any containing folder is trashed. If the server is reachable only over Tailscale, the recipient also needs access to that tailnet or a controlled public HTTPS endpoint.
 
 **Limits.** Real user accounts don't exist yet. Actors are self-declared, so grants are cooperative, not a security boundary. Read grants aren't enforced yet. Copying folders isn't supported yet. There are no signed URLs, no blob garbage collection and no Postgres backend. Treat the optional bearer token as the access control.
 

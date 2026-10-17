@@ -398,3 +398,100 @@ async fn etags_recent_diff_and_edit_over_rest() {
     let tree = json_of(send(&app, get("/drawer/v1/tree?path=/&depth=3")).await).await;
     assert_eq!(tree["truncated"], false);
 }
+
+#[tokio::test]
+async fn public_download_links_are_expiring_revocable_and_download_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = drawer::app(Drawer::open(dir.path()).await.unwrap(), Some("master-secret".into()), None);
+
+    let upload = |body: &'static str| {
+        Request::put("/drawer/v1/files?path=/docs/report.txt")
+            .header("authorization", "Bearer master-secret")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    let first = json_of(send(&app, upload("first revision")).await).await;
+    let id = first["node"]["id"].as_str().unwrap();
+    let folder_id = json_of(send(&app, Request::get("/drawer/v1/files/meta?path=/docs")
+        .header("authorization", "Bearer master-secret").body(Body::empty()).unwrap()).await)
+        .await["id"].as_str().unwrap().to_string();
+
+    // No unauthenticated way to mint or revoke a link, or access other API routes.
+    let create = |days: i64, authed: bool| {
+        let mut req = Request::post(format!("/drawer/v1/nodes/{id}/links"))
+            .header("content-type", "application/json");
+        if authed { req = req.header("authorization", "Bearer master-secret"); }
+        req.body(Body::from(json!({"expires_in_days": days}).to_string())).unwrap()
+    };
+    assert_eq!(send(&app, create(7, false)).await.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(send(&app, create(31, true)).await.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(send(&app, get("/drawer/v1/tree?path=/")).await.status(), StatusCode::UNAUTHORIZED);
+
+    let made = json_of(send(&app, create(7, true)).await).await;
+    let token = made["token"].as_str().unwrap().to_string();
+    assert_eq!(token.len(), 64);
+    let link_id = made["id"].as_str().unwrap().to_string();
+    let public_path = format!("/s/{token}");
+    let download = send(&app, get(&public_path)).await;
+    assert_eq!(download.status(), StatusCode::OK);
+    assert!(download.headers()["content-disposition"].to_str().unwrap().starts_with("attachment;"));
+    assert_eq!(download.headers()["x-content-type-options"], "nosniff");
+    assert_eq!(download.headers()["cache-control"], "no-store");
+    assert_eq!(download.into_body().collect().await.unwrap().to_bytes(), "first revision");
+
+    let fake = format!("/s/{}", "a".repeat(64));
+    assert_eq!(send(&app, get(&fake)).await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(send(&app, Request::post(&public_path).body(Body::empty()).unwrap()).await.status(), StatusCode::UNAUTHORIZED);
+
+    // A link follows the latest file version, while its opaque token never appears in listings.
+    assert_eq!(send(&app, upload("updated revision")).await.status(), StatusCode::OK);
+    assert_eq!(
+        send(&app, get(&public_path)).await.into_body().collect().await.unwrap().to_bytes(),
+        "updated revision"
+    );
+    let listed = json_of(send(&app, Request::get(format!("/drawer/v1/nodes/{id}/links"))
+        .header("authorization", "Bearer master-secret").body(Body::empty()).unwrap()).await).await;
+    assert_eq!(listed["links"].as_array().unwrap().len(), 1);
+    assert!(listed["links"][0].get("token").is_none());
+
+    // Trashing a parent folder disables the link; restoring it re-enables access.
+    let folder_path = format!("/drawer/v1/nodes/{folder_id}");
+    let change_folder = |trashed: bool| Request::patch(&folder_path)
+        .header("authorization", "Bearer master-secret")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"trashed":trashed}).to_string())).unwrap();
+    assert_eq!(send(&app, change_folder(true)).await.status(), StatusCode::OK);
+    assert_eq!(send(&app, get(&public_path)).await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(send(&app, change_folder(false)).await.status(), StatusCode::OK);
+    assert_eq!(send(&app, get(&public_path)).await.status(), StatusCode::OK);
+
+    // Revocation takes effect immediately.
+    let revoke = Request::delete(format!("/drawer/v1/nodes/{id}/links/{link_id}"))
+        .header("authorization", "Bearer master-secret").body(Body::empty()).unwrap();
+    assert_eq!(send(&app, revoke).await.status(), StatusCode::OK);
+    assert_eq!(send(&app, get(&public_path)).await.status(), StatusCode::NOT_FOUND);
+
+    // Expiration is enforced from the database on every request.
+    let another = json_of(send(&app, create(1, true)).await).await;
+    let second_token = another["token"].as_str().unwrap().to_string();
+    let pool = sqlx::SqlitePool::connect_with(
+        sqlx::sqlite::SqliteConnectOptions::new().filename(dir.path().join("drawer.db")),
+    ).await.unwrap();
+    sqlx::query("UPDATE download_links SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?")
+        .bind(another["id"].as_str().unwrap()).execute(&pool).await.unwrap();
+    assert_eq!(send(&app, get(&format!("/s/{second_token}"))).await.status(), StatusCode::NOT_FOUND);
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn download_link_follows_identity_when_its_old_path_is_reused() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = Drawer::open(dir.path()).await.unwrap();
+    let saved = svc.write("/shared.txt", b"shared", drawer::service::WriteOpts::new("owner", "")).await.unwrap();
+    let link = svc.create_download_link(&saved.node.id, "owner", 7).await.unwrap();
+    svc.move_to(drawer::service::Ref::Id(&saved.node.id), "/moved.txt", "owner").await.unwrap();
+    svc.write("/shared.txt", b"private replacement", drawer::service::WriteOpts::new("owner", "")).await.unwrap();
+    let (name, _, bytes) = svc.download_link_file(&link.token).await.unwrap();
+    assert_eq!(name, "moved.txt");
+    assert_eq!(tokio::fs::read(bytes).await.unwrap(), b"shared");
+}

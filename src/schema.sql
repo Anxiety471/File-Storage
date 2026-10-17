@@ -40,3 +40,14 @@ CREATE TABLE IF NOT EXISTS permissions (
     role      TEXT NOT NULL CHECK (role IN ('reader', 'writer', 'owner')),
     PRIMARY KEY (node_id, principal)
 );
+
+-- Bearer-capability download links. Persist only the hash of the secret.
+-- Deleting a node permanently cascades to its links.
+CREATE TABLE IF NOT EXISTS download_links (
+    id          TEXT PRIMARY KEY,
+    node_id     TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    token_hash  TEXT NOT NULL UNIQUE,
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS download_links_node ON download_links(node_id);

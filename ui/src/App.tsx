@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, Diff, Node, Revision, SearchHit, setToken, UNAUTHORIZED_EVENT } from "./api";
+import { api, ApiError, Diff, DownloadLink, Node, Revision, SearchHit, setToken, UNAUTHORIZED_EVENT } from "./api";
 import { Badge, extOf, fileType, isTextViewer } from "./filetypes";
 import { Icon } from "./icons";
 import { BinaryCard, CodeEditor, DiffView, DocxView, HtmlView, ImageView, Loading, MarkdownView, MediaView, PdfView, SheetView } from "./viewers";
@@ -142,6 +142,7 @@ export function App() {
   const [file, setFile] = useState<string | null>(initial.file);
   const [dirty, setDirty] = useState(false);
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  const [shareTarget, setShareTarget] = useState<Node | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
   const [newMenu, setNewMenu] = useState(false);
   const [sort, setSort] = useState<Sort>(loadSort);
@@ -664,6 +665,7 @@ export function App() {
                   rename={rename}
                   move={move}
                   copy={copy}
+                  share={(n) => setShareTarget(n)}
                   download={(n) => run(() => api.download(n.path))}
                   trash={(n) => trash(n)}
                   restore={restore}
@@ -684,6 +686,9 @@ export function App() {
         </main>
       </div>
 
+      {shareTarget && (
+        <ShareLinksDialog node={shareTarget} close={() => setShareTarget(null)} notify={notify} />
+      )}
       {dialog && (
         <DialogBox
           dialog={dialog}
@@ -742,6 +747,7 @@ function FileTable(props: {
   rename: (n: Node) => void;
   move: (n: Node) => void;
   copy: (n: Node) => void;
+  share: (n: Node) => void;
   download: (n: Node) => void;
   trash: (n: Node) => void;
   restore: (n: Node) => void;
@@ -867,6 +873,9 @@ function FileTable(props: {
                                 </button>
                                 <button role="menuitem" onClick={pick(props.download, n)}>
                                   <Icon name="download" size={18} /> Download
+                                </button>
+                                <button role="menuitem" onClick={pick(props.share, n)}>
+                                  <Icon name="copy" size={18} /> Share download link
                                 </button>
                               </>
                             )}
@@ -1298,6 +1307,107 @@ function Editor(props: {
           </aside>
         )}
       </div>
+    </div>
+  );
+}
+
+
+/** Public links never include the instance's bearer token, and are stored hashed on the server. */
+function ShareLinksDialog({
+  node,
+  close,
+  notify,
+}: {
+  node: Node;
+  close: () => void;
+  notify: (message: string, tone?: "ok" | "error") => void;
+}) {
+  const [links, setLinks] = useState<DownloadLink[]>([]);
+  const [newUrl, setNewUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const input = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let current = true;
+    api.links(node.id)
+      .then((found) => { if (current) setLinks(found); })
+      .catch((e) => { if (current) notify(e instanceof Error ? e.message : String(e), "error"); })
+      .finally(() => { if (current) setLoading(false); });
+    return () => { current = false; };
+  }, [node.id, notify]);
+
+  const perform = async (action: () => Promise<void>) => {
+    setBusy(true);
+    try {
+      await action();
+    } catch (e) {
+      notify(e instanceof Error ? e.message : String(e), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const create = () => perform(async () => {
+    const link = await api.createLink(node.id);
+    setNewUrl(`${window.location.origin}/s/${link.token}`);
+    setLinks(await api.links(node.id));
+    notify("Link created. Copy it now; Drawer will not display this secret again.");
+  });
+
+  const copy = () => perform(async () => {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(newUrl);
+    } else {
+      input.current?.select();
+      if (!document.execCommand("copy")) throw new Error("Copy failed. Select the URL and copy it manually.");
+    }
+    notify("Link copied");
+  });
+
+  const revoke = (id: string) => perform(async () => {
+    await api.revokeLink(node.id, id);
+    setLinks((prev) => prev.filter((link) => link.id !== id));
+    notify("Download link revoked");
+  });
+
+  return (
+    <div className="modal-scrim" onMouseDown={close}>
+      <section className="modal share-modal" role="dialog" aria-modal="true" aria-labelledby="share-title" onMouseDown={(e) => e.stopPropagation()}>
+        <h3 id="share-title">Share “{node.name}”</h3>
+        <p className="muted small">
+          Anyone with the link can download this file for 7 days without your Drawer access token.
+          Links always serve the latest version. Revoke a link to disable it immediately.
+        </p>
+        <div className="modal-actions">
+          <button type="button" className="btn primary" disabled={busy || loading} onClick={create}>
+            Create 7-day link
+          </button>
+        </div>
+        {newUrl && (
+          <div className="share-created">
+            <label htmlFor="share-url" className="muted small">Copy this link now; it is only shown once.</label>
+            <div className="share-copy-row">
+              <input id="share-url" ref={input} readOnly value={newUrl} onFocus={(e) => e.currentTarget.select()} />
+              <button className="btn" type="button" disabled={busy} onClick={copy}>Copy</button>
+            </div>
+          </div>
+        )}
+        <h4>Existing links</h4>
+        {loading ? <p className="muted small">Loading links…</p> : links.length === 0 ? <p className="muted small">No links created yet.</p> : (
+          <ul className="share-links">
+            {links.map((link) => (
+              <li key={link.id}>
+                <span className="muted small">
+                  {new Date(link.expires_at).getTime() < Date.now() ? "Expired" : "Expires"}: {new Date(link.expires_at).toLocaleString()}
+                </span>
+                <button type="button" className="btn danger" disabled={busy} onClick={() => revoke(link.id)}>Revoke</button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="modal-actions"><button className="btn" type="button" onClick={close}>Done</button></div>
+      </section>
     </div>
   );
 }
