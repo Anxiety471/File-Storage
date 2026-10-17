@@ -702,3 +702,15 @@ async fn zip_selection_streams_nested_files_and_empty_folders() {
     entry.read_to_end(&mut content).await.unwrap();
     assert_eq!(content, b"zip content");
 }
+
+#[tokio::test]
+async fn archive_rejects_names_that_windows_extractors_treat_as_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Drawer::open(dir.path()).await.unwrap();
+    for path in ["/..\\escape.txt", "/C:drive.txt", "/.. /escape.txt"] {
+        let file = s.write(path, b"safe contents", drawer::service::WriteOpts::new("api", "")).await.unwrap();
+        let app = drawer::app(s.clone(), None, None);
+        let response = send(&app, get(&format!("/drawer/v1/archive?ids={}", file.node.id))).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+    }
+}
