@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 
 use crate::error::{Error, Result};
 use crate::service::{Drawer, Edit, NodeUpdate, Properties, Ref, WriteOpts, normalize};
+use crate::update;
 
 /// Custom properties travel as `x-drawer-prop-<key>` headers, like GCS's `x-goog-meta-*`.
 const PROP_PREFIX: &str = "x-drawer-prop-";
@@ -127,11 +128,51 @@ pub async fn health() -> Json<Value> {
     Json(json!({ "ok": true }))
 }
 
+/// Run blocking release work (curl, tar, file swaps) off the async runtime.
+async fn blocking<T, F>(f: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| Error::Internal(e.to_string()))?
+        .map_err(|e| Error::Upstream(format!("{e:#}")))
+}
+
+/// Is a newer release published than the one this server runs?
+pub async fn update_check() -> Result<Json<update::Check>> {
+    let status = blocking(|| update::check(&update::Config::from_env())).await?;
+    Ok(Json(status))
+}
+
+/// Install the latest release if it is newer. The running server keeps its old code until restarted.
+pub async fn update_install() -> Result<Json<Value>> {
+    let (status, updated) = blocking(|| {
+        let cfg = update::Config::from_env();
+        let status = update::check(&cfg)?;
+        if status.update_available {
+            let exe = std::env::current_exe()?.canonicalize()?;
+            update::install(&cfg, &status.latest, &exe)?;
+        }
+        let updated = status.update_available;
+        Ok((status, updated))
+    })
+    .await?;
+    Ok(Json(json!({
+        "current": status.current,
+        "latest": status.latest,
+        "updated": updated,
+        "restart_required": updated,
+    })))
+}
+
 pub fn router() -> Router<Drawer> {
     Router::new()
         .route("/health", get(health))
         .route("/tree", get(tree))
         .route("/recent", get(recent))
+        .route("/update", get(update_check).post(update_install))
         .route("/diff", get(diff))
         .route("/edit", post(edit))
         .route("/folders", post(mkdir).delete(delete_file))

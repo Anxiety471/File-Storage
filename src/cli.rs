@@ -179,6 +179,12 @@ pub enum Cmd {
         #[arg(long, default_value = "drawer")]
         name: String,
     },
+    /// Update this install to the latest GitHub release: the binary and the web UI. Restart `serve` after.
+    Update {
+        /// Only report whether a newer release exists.
+        #[arg(long)]
+        check: bool,
+    },
     /// Print a shell completion script, e.g. `drawer completions zsh > ~/.zfunc/_drawer`.
     Completions {
         #[arg(value_enum)]
@@ -283,6 +289,10 @@ async fn dispatch(cli: Cli) -> Result<()> {
     if let Cmd::McpConfig { format, url, name } = &cmd {
         print!("{}", mcp_config(*format, &cli.data_dir, url.as_deref(), name)?);
         return Ok(());
+    }
+    if let Cmd::Update { check } = &cmd {
+        // Works on the install, not the store, so it runs before the store check below.
+        return crate::update::run(*check);
     }
     if let Cmd::Completions { shell } = &cmd {
         let mut command = <Cli as clap::CommandFactory>::command();
@@ -560,7 +570,9 @@ async fn dispatch(cli: Cli) -> Result<()> {
             if json { emit_json(&grants) } else { println!("removed {principal} from {}", node.path); Ok(()) }
         }
         Cmd::Doctor => doctor(&svc, &cli.data_dir, json).await,
-        Cmd::McpConfig { .. } | Cmd::Completions { .. } => unreachable!("handled before the store is opened"),
+        Cmd::McpConfig { .. } | Cmd::Completions { .. } | Cmd::Update { .. } => {
+            unreachable!("handled before the store is opened")
+        }
     }
 }
 

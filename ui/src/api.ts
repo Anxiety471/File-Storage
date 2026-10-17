@@ -36,6 +36,19 @@ export interface WriteOutcome {
   new_revision: boolean;
 }
 
+export interface UpdateStatus {
+  current: string;
+  latest: string;
+  update_available: boolean;
+}
+
+export interface UpdateResult {
+  current: string;
+  latest: string;
+  updated: boolean;
+  restart_required: boolean;
+}
+
 export interface SearchHit {
   id: string;
   path: string;
@@ -84,6 +97,7 @@ export function setToken(token: string) {
     // storage blocked: the token lasts until reload
   }
   memoryToken = token || null;
+  if (token) window.dispatchEvent(new Event(AUTHENTICATED_EVENT));
 }
 let memoryToken: string | null = null;
 
@@ -95,6 +109,7 @@ function headers(extra: Record<string, string> = {}): Record<string, string> {
 
 /** Fired on a 401 so the app can ask for the token. */
 export const UNAUTHORIZED_EVENT = "drawer:unauthorized";
+export const AUTHENTICATED_EVENT = "drawer:authenticated";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -128,6 +143,16 @@ export interface AuthStatus {
 }
 
 export const api = {
+  /** Is a newer release published than the one this server runs? */
+  async updateCheck(): Promise<UpdateStatus> {
+    const r = await check(await fetch(`${BASE}/update`, { headers: headers() }));
+    return r.json();
+  },
+  /** Installs the latest release if it is newer. The server runs the new version after a restart. */
+  async updateInstall(): Promise<UpdateResult> {
+    const r = await check(await fetch(`${BASE}/update`, { method: "POST", headers: headers() }));
+    return r.json();
+  },
   async authStatus(): Promise<AuthStatus> {
     const response = await fetch("/auth/me", { credentials: "same-origin" });
     if (!response.ok) throw new ApiError(response.status, "Password authentication is not configured");
@@ -140,6 +165,7 @@ export const api = {
       body: JSON.stringify({ password }),
     });
     if (!response.ok) throw new ApiError(response.status, "Incorrect administrator password");
+    window.dispatchEvent(new Event(AUTHENTICATED_EVENT));
   },
   async logout(): Promise<void> {
     await check(await fetch("/auth/logout", { method: "POST", credentials: "same-origin" }));

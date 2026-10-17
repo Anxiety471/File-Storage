@@ -73,6 +73,7 @@ a { cursor: pointer; }
 
 /* Top bar */
 .topbar { display: flex; align-items: center; gap: 24px; padding: 8px 16px; height: 64px; }
+.update-btn { white-space: nowrap; }
 .brand { display: flex; flex-shrink: 0; align-items: center; gap: 10px; font-size: 20px; color: var(--text); text-decoration: none; min-width: 200px; }
 .brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: var(--accent); color: var(--accent-ink); }
 .search { flex: 1; max-width: 720px; display: flex; align-items: center; gap: 10px; background: var(--surface-2); border-radius: 999px; padding: 0 8px 0 18px; height: 46px; color: var(--muted); transition: background .15s, box-shadow .15s; }
@@ -366,3 +367,20 @@ tr:hover .row-actions, tr.menu-open .row-actions, .row-actions:focus-within { op
 .bulk-bar .btn { flex-shrink: 0; }
 .files .col-select { width: 40px; text-align: center; }
 .files .col-select input { width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent); }
+
+/* Keep search and account actions usable together on phone screens. */
+@media (max-width: 600px) {
+  .topbar {
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    gap: 8px;
+    height: auto;
+    min-height: 64px;
+    flex-shrink: 0;
+  }
+  .topbar .brand { grid-column: 1; grid-row: 1; }
+  .topbar .search { grid-column: 2 / -1; grid-row: 1; min-width: 0; max-width: none; }
+  .topbar > .btn { grid-row: 2; white-space: nowrap; }
+  .topbar > .update-btn { grid-column: 2; justify-self: start; }
+  .topbar > .btn:not(.update-btn) { grid-column: 3; justify-self: end; }
+}

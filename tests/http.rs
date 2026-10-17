@@ -647,3 +647,12 @@ async fn password_mode_mcp_uses_verified_actor() -> anyhow::Result<()> {
     server.abort();
     Ok(())
 }
+
+#[tokio::test]
+async fn updater_requires_password_authentication() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = drawer::app_with_auth(Drawer::open(dir.path()).await.unwrap(), None, None, Some("password".into()), false);
+    assert_eq!(send(&app, get("/drawer/v1/update")).await.status(), StatusCode::UNAUTHORIZED);
+    let install = Request::post("/drawer/v1/update").body(Body::empty()).unwrap();
+    assert_eq!(send(&app, install).await.status(), StatusCode::UNAUTHORIZED);
+}

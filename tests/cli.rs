@@ -334,3 +334,20 @@ fn mcp_config_covers_each_harness_and_http() {
     assert!(err.contains("--name"), "{err}");
     assert!(run(&["completions", "bash"]).contains("_drawer"));
 }
+
+#[test]
+fn update_check_reports_an_unreachable_release_host_without_touching_the_store() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("store");
+    // Port 9 is the discard service and is closed here, so the request fails at connect.
+    let out = Command::new(env!("CARGO_BIN_EXE_drawer"))
+        .arg("--data-dir")
+        .arg(&data)
+        .args(["update", "--check"])
+        .env("DRAWER_API_URL", "http://127.0.0.1:9")
+        .output()
+        .unwrap();
+    let err = fail(out);
+    assert!(err.contains("cannot reach"), "{err}");
+    assert!(!data.exists(), "update must not create a store");
+}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, Diff, DownloadLink, Node, Revision, SearchHit, setToken, UNAUTHORIZED_EVENT } from "./api";
+import { api, ApiError, Diff, DownloadLink, Node, Revision, SearchHit, setToken, UNAUTHORIZED_EVENT, AUTHENTICATED_EVENT, UpdateStatus } from "./api";
 import { Badge, extOf, fileType, isTextViewer } from "./filetypes";
 import { Icon } from "./icons";
 import { BinaryCard, CodeEditor, DiffView, DocxView, HtmlView, ImageView, Loading, MarkdownView, MediaView, PdfView, SheetView } from "./viewers";
@@ -146,6 +146,7 @@ export function App() {
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [toast, setToast] = useState<Toast | null>(null);
   const [newMenu, setNewMenu] = useState(false);
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
   const [signedIn, setSignedIn] = useState(false);
   useEffect(() => {
     api.authStatus().then((status) => setSignedIn(status.authenticated)).catch(() => {});
@@ -162,6 +163,22 @@ export function App() {
     const t = setTimeout(() => setToast(null), toast.tone === "error" || toast.action ? 6000 : 3000);
     return () => clearTimeout(t);
   }, [toast]);
+
+  // Recheck after login as well: the first request may precede authentication.
+  useEffect(() => {
+    let current = true;
+    const checkUpdate = () => {
+      api.updateCheck().then((status) => {
+        if (current) setUpdate(status.update_available ? status : null);
+      }).catch(() => {});
+    };
+    checkUpdate();
+    window.addEventListener(AUTHENTICATED_EVENT, checkUpdate);
+    return () => {
+      current = false;
+      window.removeEventListener(AUTHENTICATED_EVENT, checkUpdate);
+    };
+  }, []);
 
   const run = useCallback(
     async (fn: () => Promise<void>) => {
@@ -512,6 +529,21 @@ export function App() {
       notify(`Moved “${n.name}” to the trash`, "ok", { label: "Undo", run: () => restore(n) });
     });
 
+  const askUpdate = () => {
+    if (!update) return;
+    setDialog({
+      kind: "confirm",
+      title: `Update Drawer to ${update.latest}?`,
+      body: "This downloads the release, checks its checksum and replaces the server's binary and web UI. Restart drawer serve afterwards to run the new version.",
+      action: "Update",
+      submit: async () => {
+        const result = await api.updateInstall();
+        setUpdate(null);
+        notify(result.updated ? `Updated to ${result.latest}. Restart drawer serve to run it.` : `Already on ${result.latest}.`);
+      },
+    });
+  };
+
   const purge = (n: Node) =>
     setDialog({
       kind: "confirm",
@@ -606,10 +638,16 @@ export function App() {
             </kbd>
           )}
         </form>
+        {update && (
+          <button className="btn primary update-btn" onClick={askUpdate}>
+            Update to {update.latest}
+          </button>
+        )}
         {signedIn && (
           <button type="button" className="btn" onClick={() => run(async () => {
             await api.logout();
             setSignedIn(false);
+            setUpdate(null);
             setNodes([]);
             setFile(null);
             window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));

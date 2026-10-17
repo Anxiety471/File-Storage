@@ -8,6 +8,7 @@ pub mod links;
 pub mod transfers;
 pub mod mcp;
 pub mod service;
+pub mod update;
 
 use std::{path::PathBuf, sync::Arc};
 
