@@ -241,6 +241,35 @@ struct UnshareArg {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+struct RememberArg {
+    /// Note name, e.g. "Project Drawer" or "people/Alice". An existing note with that name is updated.
+    name: String,
+    /// Markdown body. Link other notes with [[Note Name]] and tag with #tag.
+    content: String,
+    /// Tags to attach (without #).
+    tags: Option<Vec<String>>,
+    /// true adds the content to the end of an existing note instead of replacing it.
+    append: Option<bool>,
+    author: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct RecallArg {
+    /// Case-insensitive text matched against note names and bodies. Omit to list recent notes.
+    query: Option<String>,
+    /// Only notes with this tag (#project also matches #project/sub).
+    tag: Option<String>,
+    /// Most results to return (default 20).
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct NoteArg {
+    /// Note name or folder/name, as written in a [[link]].
+    name: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 struct SearchArg {
     /// Case-insensitive text matched against file paths and file contents.
     query: String,
@@ -299,6 +328,12 @@ fn annotations_for(name: &str) -> (&'static str, ToolAnnotations) {
         "drawer_starred" => read("List starred"),
         "drawer_recent" => read("Recently changed"),
         "drawer_search" => read("Search files"),
+        "memory_recall" => read("Search memories"),
+        "memory_read" => read("Read memory"),
+        "memory_tags" => read("List memory tags"),
+        "memory_graph" => read("Memory link graph"),
+        "memory_remember" => change("Save memory", false, false),
+        "memory_forget" => change("Delete memory", false, true),
         // gone for good: history included
         "drawer_purge" => change("Delete forever", true, false),
         "drawer_unshare" => change("Remove access", true, true),
@@ -600,6 +635,41 @@ impl DrawerMcp {
     async fn drawer_search(&self, Parameters(a): Parameters<SearchArg>) -> Result<String, String> {
         json(self.svc.search(&a.query, a.limit.unwrap_or(20)).await.map_err(|e| e.to_string())?)
     }
+
+    #[tool(description = "Save a memory as a Markdown note in the /memory vault (Obsidian-style). Use [[Note Name]] to link related notes and #tags or the tags argument to categorise. An existing note with the same name is replaced, or extended with append=true. Prefer one note per topic and link them.")]
+    async fn memory_remember(&self, Parameters(a): Parameters<RememberArg>, ctx: RequestContext<RoleServer>) -> Result<String, String> {
+        let actor = self.actor(a.author, &ctx);
+        let out = crate::vault::save(&self.svc, &a.name, &a.content, &a.tags.unwrap_or_default(), a.append.unwrap_or(false), &actor)
+            .await
+            .map_err(|e| e.to_string())?;
+        json(out)
+    }
+
+    #[tool(description = "Delete a memory note by name. It moves to the trash, so it can be restored with drawer_restore. Links to it stay in other notes as unresolved links.")]
+    async fn memory_forget(&self, Parameters(a): Parameters<NoteArg>, ctx: RequestContext<RoleServer>) -> Result<String, String> {
+        let actor = self.actor(None, &ctx);
+        json(crate::vault::forget(&self.svc, &a.name, &actor).await.map_err(|e| e.to_string())?)
+    }
+
+    #[tool(description = "Find memories by text and/or tag, newest first. Returns names, tags and a matching line. Call this before answering questions that earlier notes might cover; read a hit with memory_read.")]
+    async fn memory_recall(&self, Parameters(a): Parameters<RecallArg>) -> Result<String, String> {
+        json(crate::vault::list(&self.svc, a.tag.as_deref(), a.query.as_deref(), a.limit.unwrap_or(20)).await.map_err(|e| e.to_string())?)
+    }
+
+    #[tool(description = "Read a memory note by name, with the notes it links to and the notes that link back to it (backlinks).")]
+    async fn memory_read(&self, Parameters(a): Parameters<NoteArg>) -> Result<String, String> {
+        json(crate::vault::get(&self.svc, &a.name).await.map_err(|e| e.to_string())?)
+    }
+
+    #[tool(description = "The memory link graph: every note as a node (with its tags and link counts) and every [[link]] as an edge. Notes linked to but not yet written appear as nodes without a path. Use it to see how memories relate and which topics are missing notes.")]
+    async fn memory_graph(&self) -> Result<String, String> {
+        json(crate::vault::graph(&self.svc).await.map_err(|e| e.to_string())?)
+    }
+
+    #[tool(description = "List every tag used in the memory vault with how many notes use it.")]
+    async fn memory_tags(&self) -> Result<String, String> {
+        json(crate::vault::tags(&self.svc).await.map_err(|e| e.to_string())?)
+    }
 }
 
 /// What a write tool reports: enough to chain the next guarded write.
@@ -623,7 +693,10 @@ of rewriting it. When other agents may edit the same file, read it, then write w
 if_head_revision set to the revision the read reported; on a precondition failure, re-read and \
 merge. drawer_recent shows what changed lately, and drawer_list with depth > 1 shows a whole \
 tree. Binary files (PDF, Office, images) travel as base64 with encoding \"base64\". Deleting \
-moves to the trash; drawer_purge is the only permanent delete.";
+moves to the trash; drawer_purge is the only permanent delete. Long-term memory lives in the \
+/memory folder as an Obsidian-style vault of Markdown notes: memory_recall searches it by text or \
+tag, memory_read opens a note with its links and backlinks, and memory_remember saves one, memory_forget deletes one (to the trash). Link \
+related notes with [[Note Name]] and tag with #tag.";
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for DrawerMcp {

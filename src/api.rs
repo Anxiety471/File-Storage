@@ -207,6 +207,10 @@ pub fn router() -> Router<Drawer> {
         .route("/trash", get(trash))
         .route("/starred", get(starred))
         .route("/search", get(search))
+        .route("/memory/notes", get(crate::vault::list_notes))
+        .route("/memory/note", get(crate::vault::read_note).put(crate::vault::save_note).delete(crate::vault::delete_note))
+        .route("/memory/tags", get(crate::vault::list_tags))
+        .route("/memory/graph", get(crate::vault::read_graph))
 }
 
 /// Exactly one of `id` or `path` must name the node.

@@ -289,7 +289,7 @@ fn mcp_config_points_at_this_binary_and_an_absolute_store() {
 #[test]
 fn version_flag_prints_the_crate_version() {
     let out = ok(Command::new(env!("CARGO_BIN_EXE_drawer")).arg("--version").output().unwrap());
-    assert!(out.starts_with("drawer 0.1.2"), "{out}");
+    assert!(out.starts_with("drawer 0.1.3"), "{out}");
 }
 
 #[test]
@@ -474,4 +474,22 @@ fn backup_schedule_can_be_inspected_without_starting_systemd() {
     assert!(service.contains("UMask=0077"));
     assert!(std::fs::read_to_string(units.join("drawer-backup.timer")).unwrap().contains("OnCalendar=daily"));
     assert!(!dir.path().join("store").exists());
+}
+
+#[test]
+fn memory_commands_save_recall_and_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    // `memory remember` starts the store, like `put`.
+    assert!(ok(drawer(data, &["memory", "remember", "Drawer", "A file server #infra", "-t", "project"])).starts_with("saved /memory/Drawer.md"));
+    ok(drawer(data, &["memory", "remember", "people/Alice", "Runs [[Drawer]]"]));
+    assert!(ok(drawer(data, &["memory", "recall", "file server"])).contains("Drawer #project #infra"));
+    assert!(ok(drawer(data, &["memory", "recall", "-t", "project"])).contains("Drawer"));
+    assert!(ok(drawer(data, &["memory", "read", "drawer"])).contains("backlinks: [[Alice]]"));
+    assert!(ok(drawer(data, &["memory", "tags"])).contains("#infra  1"));
+    let graph = ok(drawer(data, &["memory", "graph"]));
+    assert!(graph.contains("Alice\n  -> Drawer") && graph.contains("Drawer\n  <- Alice"), "{graph}");
+    assert!(fail(drawer(data, &["memory", "read", "nope"])).contains("not found"));
+    assert!(ok(drawer(data, &["memory", "forget", "Alice"])).starts_with("trashed /memory/people/Alice.md"));
+    assert!(fail(drawer(data, &["memory", "read", "Alice"])).contains("not found"));
 }

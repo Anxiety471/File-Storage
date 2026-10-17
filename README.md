@@ -159,7 +159,7 @@ mcp_servers:
 | `opencode` | JSON for `opencode.json` |
 | `json` | an `mcpServers` block for Claude Desktop, Cursor, Windsurf and most others |
 
-The server exposes 21 tools:
+The server exposes 27 tools:
 
 | Tools | |
 | --- | --- |
@@ -168,6 +168,7 @@ The server exposes 21 tools:
 | `drawer_revisions`, `drawer_diff`, `drawer_rollback`, `drawer_copy`, `drawer_move` | history and layout |
 | `drawer_delete`, `drawer_trash`, `drawer_restore`, `drawer_purge` | trash lifecycle |
 | `drawer_star`, `drawer_share`, `drawer_unshare` | stars and grants |
+| `memory_remember`, `memory_recall`, `memory_read`, `memory_forget`, `memory_tags`, `memory_graph` | [AI memory vault](#ai-memory-vault) |
 
 Built for how agents work:
 
@@ -185,6 +186,33 @@ For concurrent agents, read the file, then write with `if_head_revision` set to 
 Setup for Hermes, Claude Code, Claude Desktop, Codex, Gemini CLI, Cursor, VS Code, the OpenAI Agents SDK and LangChain is in [docs/harnesses.md](docs/harnesses.md).
 
 **Mirroring Hermes output.** MCP only saves what the agent chooses to save. [`integrations/hermes/drawer-mirror`](integrations/hermes/drawer-mirror/README.md) is a Hermes plugin that copies every successful `write_file` and `patch` into Drawer after the fact, and records the links Hermes shares. Hermes keeps its own artifacts, and both can run side by side.
+
+### AI memory vault
+
+Drawer can hold long-term memory for AI agents, designed like an [Obsidian](https://obsidian.md) vault. Memories are plain Markdown notes in the `/memory` folder, so they are versioned, searchable, and editable in the web UI like any other file, and you can open the folder in Obsidian itself via a synced copy (`drawer sync`).
+
+- **Notes** are `.md` files. The note name is the file name; folders (`people/Alice`) work as in Obsidian.
+- **Links**: `[[Note Name]]`, `[[folder/Note|alias]]` and `[[Note#Heading]]`. A bare name matches the note in any folder, shortest path first. Reading a note returns its outgoing links (marking ones that point to notes that don't exist yet) and its **backlinks**.
+- **Tags**: `#tag` in the text and `tags: [a, b]` (or a YAML list) in frontmatter. `#project` also matches `#project/drawer`. Code blocks and inline code are ignored.
+- **Derived index.** Links, backlinks and tags are computed from the files on each request, so edits made through any route (UI, REST, `drawer_write`, sync) are reflected at once. This suits vaults of up to a few thousand notes.
+
+Agents use the `memory_*` MCP tools: `memory_recall` (text and/or tag search), `memory_read` (a note with links and backlinks), `memory_remember` (create, replace or `append`) and `memory_tags`. The server's MCP instructions tell clients to use them. The same operations are in the REST API under `/memory`, and on the command line:
+
+```sh
+drawer memory remember "Project Drawer" "Rust file server. Owner: [[people/Alice]]" -t project
+echo "Prefers tabs" | drawer memory remember Preferences -t style --append
+drawer memory recall "file server"      # or: drawer memory recall --tag project
+drawer memory read "Project Drawer"     # content, links and backlinks
+drawer memory forget "Old note"      # to the trash; `drawer restore <id>` undoes it
+drawer memory graph                     # who links to whom; missing notes marked with ?
+drawer memory tags
+```
+
+**Managing memories.** The Memories panel is full create, read, update and delete: **+ New memory** (or click a dashed graph node to write a note that is linked but missing), **Edit** and **Delete** on an open note. Delete moves the note to the trash, so it can be restored.
+
+**Browsing memories.** The web UI has a **Memories** entry in the sidebar. Its **Graph** view is Obsidian's graph view: every note is a node, every `[[link]]` an edge, colour follows the first tag, size follows how connected a note is, and dashed nodes are notes that are linked but not written yet. Drag, zoom, filter by name or `#tag`, and click a node to open the note. **List** view has search and tag chips; opened notes render with clickable `[[links]]` and a "Linked from" list. The graph is also `GET /drawer/v1/memory/graph` and the `memory_graph` MCP tool. Or open the same files in the normal file browser under `/memory`.
+
+**How an AI saves memories.** Connect it over MCP (see above); the server's instructions tell it to call `memory_recall` before answering and `memory_remember` to save durable facts. Agents without MCP can `PUT /drawer/v1/memory/note` or run `drawer memory remember`.
 
 ## REST API
 
@@ -221,6 +249,10 @@ Base path `/drawer/v1`. Nodes are named by `path=` or `id=`. Mutations name thei
 | DELETE | `/nodes/{id}/links/{link_id}` | revoke a download link |
 | GET | `/s/{token}` (outside `/drawer/v1`) | public attachment download, no instance bearer token needed; 404 when invalid, expired, revoked or trashed |
 | GET | `/search?q=` | names first, then contents with `line` and `snippet` |
+| GET | `/memory/notes?tag=&q=&limit=` | memory notes, newest first, filtered by tag and/or text |
+| GET / PUT / DELETE | `/memory/note` | `GET ?name=` returns content, tags, links and backlinks; `PUT {"name","content","tags","append"}` creates, replaces or appends; `DELETE ?name=` moves the note to the trash |
+| GET | `/memory/tags` | every tag with its note count |
+| GET | `/memory/graph` | link graph: `nodes` (note, tags, in/out counts; no `path` for unwritten notes) and `edges` |
 | GET | `/recent?limit=` | live files, most recently changed first, with `modified_by` |
 | GET | `/update` | is a newer release published? `{current, latest, update_available}` |
 | POST | `/update` | install the latest release if newer; the server runs the new version after a restart |

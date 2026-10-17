@@ -158,7 +158,19 @@ export interface UploadLink { id: string; expires_at: string; max_files: number;
 
 export interface UserAccount { id: string; username: string; quota_bytes: number; disabled: boolean }
 
+export interface MemoryNote { name: string; path: string; tags: string[]; modified_at: string; modified_by: string; size: number; snippet?: string }
+export interface MemoryDetail extends MemoryNote { revision: number; content: string; links: { target: string; path?: string }[]; backlinks: MemoryNote[] }
+
+export interface GraphNode { id: string; name: string; path?: string; tags: string[]; out: number; inbound: number }
+export interface MemoryGraph { nodes: GraphNode[]; edges: [string, string][] }
+
 export const api = {
+  async forgetMemory(name: string): Promise<void> { await check(await fetch(`${BASE}/memory/note?name=${encodeURIComponent(name)}`, { method: "DELETE", headers: headers() })); },
+  async saveMemory(name: string, content: string, tags: string[], append = false): Promise<{ path: string; created: boolean }> { return (await check(await fetch(`${BASE}/memory/note`, json("PUT", { name, content, tags, append })))).json(); },
+  async memoryGraph(): Promise<MemoryGraph> { return (await check(await fetch(`${BASE}/memory/graph`, { headers: headers() }))).json(); },
+  async memoryNotes(q: string, tag: string): Promise<MemoryNote[]> { const p = new URLSearchParams({ limit: "200" }); if (q) p.set("q", q); if (tag) p.set("tag", tag); return (await check(await fetch(`${BASE}/memory/notes?${p}`, { headers: headers() }))).json().then((r: { notes: MemoryNote[] }) => r.notes); },
+  async memoryNote(name: string): Promise<MemoryDetail> { return (await check(await fetch(`${BASE}/memory/note?name=${encodeURIComponent(name)}`, { headers: headers() }))).json(); },
+  async memoryTags(): Promise<{ tag: string; count: number }[]> { return (await check(await fetch(`${BASE}/memory/tags`, { headers: headers() }))).json().then((r: { tags: { tag: string; count: number }[] }) => r.tags); },
   async users(): Promise<UserAccount[]> { return (await check(await fetch(`${BASE}/users`, { headers: headers() }))).json(); },
   async createUser(username: string, password: string, quota_bytes: number): Promise<void> { await check(await fetch(`${BASE}/users`, json("POST", { username, password, quota_bytes }))); },
   async changeUser(id: string, changes: { quota_bytes?: number; disabled?: boolean }): Promise<void> { await check(await fetch(`${BASE}/users/${id}`, json("PATCH", changes))); },
