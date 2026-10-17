@@ -31,6 +31,7 @@ struct TransferInfo {
     size: i64,
     received: i64,
     expires_at: String,
+    sha256: Option<String>,
 }
 fn actor(h: &HeaderMap) -> String {
     h.get("x-drawer-author").and_then(|v| v.to_str().ok()).unwrap_or("api").to_string()
@@ -57,7 +58,7 @@ async fn owned(s: &Drawer, id: &str, who: &str) -> Result<sqlx::sqlite::SqliteRo
 fn info(r: &sqlx::sqlite::SqliteRow) -> TransferInfo {
     TransferInfo {
         id: r.get("id"), path: r.get("path"),
-        size: r.get("size"), received: r.get("received"), expires_at: r.get("expires_at"),
+        size: r.get("size"), received: r.get("received"), expires_at: r.get("expires_at"), sha256: r.get("sha256"),
     }
 }
 pub async fn start(State(s): State<Drawer>, headers: HeaderMap, Json(b): Json<NewTransfer>) -> Result<Json<Value>> {

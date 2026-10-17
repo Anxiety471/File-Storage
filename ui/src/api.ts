@@ -1,3 +1,4 @@
+import { uploadChecksum } from "./checksum";
 export interface Node {
   id: string;
   parent_id: string | null;
@@ -237,7 +238,9 @@ export const api = {
     onProgress: (done: number, total: number) => void,
     signal?: AbortSignal,
   ): Promise<WriteOutcome> {
-    const key = `drawer:transfer:${path}:${file.size}:${file.lastModified}`;
+    onProgress(0, file.size);
+    const sha256 = await uploadChecksum(file, signal);
+    const key = `drawer:transfer:v2:${path}:${sha256}`;
     const opts = { headers: headers() };
     let id: string | null = null;
     try { id = localStorage.getItem(key); } catch { /* Storage may be blocked. */ }
@@ -245,8 +248,8 @@ export const api = {
     if (id) {
       try {
         const r = await check(await fetch(`${BASE}/transfers/${encodeURIComponent(id)}`, opts));
-        const state: { received: number; size: number; path: string } = await r.json();
-        if (state.size !== file.size || state.path !== path) throw new Error("Upload changed");
+        const state: { received: number; size: number; path: string; sha256: string | null } = await r.json();
+        if (state.size !== file.size || state.path !== path || state.sha256 !== sha256) throw new Error("Upload changed");
         offset = state.received;
       } catch {
         try { localStorage.removeItem(key); } catch { /* Optional resume cache. */ }
@@ -254,7 +257,7 @@ export const api = {
       }
     }
     if (!id) {
-      const r = await check(await fetch(`${BASE}/transfers`, json("POST", { path, size: file.size })));
+      const r = await check(await fetch(`${BASE}/transfers`, json("POST", { path, size: file.size, sha256 })));
       const state: { id: string } = await r.json();
       id = state.id;
       try { localStorage.setItem(key, id); } catch { /* Uploads still work without resume caching. */ }
@@ -278,6 +281,7 @@ export const api = {
       method: "POST", headers: headers(), signal,
     }));
     const outcome: WriteOutcome = await r.json();
+    if (outcome.node.hash !== sha256) throw new Error("Server returned a different file checksum");
     try { localStorage.removeItem(key); } catch { /* Optional resume cache. */ }
     return outcome;
   },

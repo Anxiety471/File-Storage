@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm ci && npm run build
+      - run: npm ci && node --experimental-strip-types --test tests/*.test.ts && npm run build
         working-directory: ui
   deploy:
     runs-on: ubuntu-latest
