@@ -722,3 +722,35 @@ async fn storage_distinguishes_deduplication_history_and_staging() {
     assert_eq!(stats["unreferenced_blob_bytes"], 0);
     assert!(stats["filesystem_available_bytes"].as_u64().unwrap() > 0);
 }
+
+#[tokio::test]
+async fn host_mount_browse_import_and_containment() {
+    let dir = tempfile::tempdir().unwrap();
+    let host = tempfile::tempdir().unwrap();
+    std::fs::create_dir(host.path().join("nested")).unwrap();
+    std::fs::write(host.path().join("nested/example.txt"), b"host contents").unwrap();
+    let s = Drawer::open(dir.path()).await.unwrap();
+    let mount = s.register_mount("Documents", host.path()).await.unwrap();
+    #[cfg(unix)] {
+        std::os::unix::fs::symlink(dir.path(), host.path().join("escape")).unwrap();
+    }
+    let app = drawer::app(s, None, None);
+    let mounts = json_of(send(&app, get("/drawer/v1/mounts")).await).await;
+    assert_eq!(mounts[0]["name"], "Documents");
+    assert!(mounts[0].get("root").is_none());
+    let base = format!("/drawer/v1/mounts/{}", mount.id);
+    let entries = json_of(send(&app, get(&format!("{base}/entries?path=nested"))).await).await;
+    assert_eq!(entries[0]["name"], "example.txt");
+    for path in ["..", "%2Fetc", "nested%2F..%2F.."] {
+        assert_eq!(send(&app, get(&format!("{base}/entries?path={path}"))).await.status(), StatusCode::BAD_REQUEST);
+    }
+    #[cfg(unix)] assert_eq!(send(&app, get(&format!("{base}/entries?path=escape"))).await.status(), StatusCode::BAD_REQUEST);
+    let import = || json_post(&format!("{base}/import"), json!({"path":"nested/example.txt","destination":"/imported.txt"}));
+    assert_eq!(send(&app, import()).await.status(), StatusCode::OK);
+    assert_eq!(send(&app, import()).await.status(), StatusCode::PRECONDITION_FAILED);
+    let imported = send(&app, get("/drawer/v1/files?path=/imported.txt")).await.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(imported, b"host contents".as_slice());
+    assert_eq!(std::fs::read(host.path().join("nested/example.txt")).unwrap(), b"host contents");
+    let protected = drawer::app_with_auth(Drawer::open(dir.path()).await.unwrap(), None, None, Some("password".into()), false);
+    assert_eq!(send(&protected, get("/drawer/v1/mounts")).await.status(), StatusCode::UNAUTHORIZED);
+}

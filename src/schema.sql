@@ -91,3 +91,8 @@ CREATE TRIGGER IF NOT EXISTS transfers_track_insert AFTER INSERT ON transfers BE
 END;
 INSERT OR IGNORE INTO transfer_history (id, actor, path, size, received, status, updated_at)
     SELECT id, actor, path, size, received, 'active', strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM transfers;
+
+-- Roots may only be registered through the local operator CLI.
+CREATE TABLE IF NOT EXISTS host_mounts (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, root TEXT NOT NULL
+);

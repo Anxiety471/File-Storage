@@ -51,6 +51,8 @@ pub enum Cmd {
     Stdio,
     /// Install or manage the Linux user background service.
     Service { #[command(subcommand)] action: crate::background::ServiceAction },
+    /// Register and manage read-only host folder mounts.
+    Mount { #[command(subcommand)] action: crate::mounts::MountAction },
     /// List a folder. Folders are shown with a trailing slash.
     Ls {
         #[arg(default_value = "/")]
@@ -328,6 +330,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
     let actor = cli.author.unwrap_or_else(default_author);
     let json = cli.json;
     match cmd {
+        Cmd::Mount { action } => crate::mounts::cli(&svc, action).await,
         Cmd::Serve(args) => serve(svc, &data_dir, args).await,
         Cmd::Stdio => {
             use rmcp::ServiceExt;

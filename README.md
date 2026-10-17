@@ -286,3 +286,24 @@ Share links optionally accept a download limit (1–1,000,000) from the dialog o
 Open **Transfers** in the sidebar to see active, paused, failed, expired, cancelled and completed uploads. Pause, select the same file to resume/retry, or cancel its staging data. Metadata and progress survive restarts; an expired lease cannot be resumed. The last 200 entries for your actor are shown. Authenticated download requests appear as **issued**; your browser's native download manager owns their completion and retry state.
 
 Select files/folders and choose **Download ZIP**, or use a folder's **Download folder as ZIP** menu. The archive preserves full Drawer-relative paths and empty folders, deduplicates overlapping selections, streams in bounded memory with ZIP64 support, and snapshots revisions at request time. A request supports up to 200 selections/5000 entries; oversized selections fail instead of silently truncating. Password sessions use native streaming downloads; legacy bearer-token browsers still buffer the resulting ZIP in the browser.
+
+### Read-only host folder mounts
+
+Register a server directory from the local operator CLI, using the server's store:
+
+```sh
+drawer mount add Documents /srv/documents
+drawer mount list
+drawer mount remove Documents
+```
+
+Open **Host folders** in the sidebar to browse registered directories, select a file,
+and import it into a new Drawer path. Imports stream through a temporary file, are
+limited to 512 MiB each, and never overwrite an existing Drawer file. The original
+host file is not modified. Removing a registration preserves imported files.
+Registration requires local CLI access; HTTP clients can only use registered roots.
+Capability-based filesystem access prevents parent traversal and symlink escapes.
+Symlinks are omitted from directory listings. Only register directories you intend
+to expose to every authenticated operator of this instance. Container deployments
+must bind-mount the directory into the container first. This exposes host folders
+inside Drawer; it does not provide an operating-system FUSE mount.

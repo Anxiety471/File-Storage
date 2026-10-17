@@ -148,7 +148,13 @@ export interface AuthStatus {
 
 export interface StorageStats { live_files: number; live_bytes: number; revisions: number; revision_bytes: number; blob_bytes: number; unreferenced_blob_bytes: number; staging_bytes: number; database_bytes: number; filesystem_total_bytes: number; filesystem_available_bytes: number; }
 
+export interface HostMount { id: string; name: string }
+export interface HostEntry { name: string; path: string; kind: "folder" | "file"; size: number }
+
 export const api = {
+  async mounts(): Promise<HostMount[]> { return (await check(await fetch(`${BASE}/mounts`, { headers: headers() }))).json(); },
+  async hostEntries(id: string, path: string): Promise<HostEntry[]> { return (await check(await fetch(`${BASE}/mounts/${encodeURIComponent(id)}/entries?path=${encodeURIComponent(path)}`, { headers: headers() }))).json(); },
+  async importHost(id: string, path: string, destination: string): Promise<WriteOutcome> { return (await check(await fetch(`${BASE}/mounts/${encodeURIComponent(id)}/import`, json("POST", { path, destination })))).json(); },
   async storage(): Promise<StorageStats> { return (await check(await fetch(`${BASE}/storage`, { headers: headers() }))).json(); },
   /** Is a newer release published than the one this server runs? */
   async updateCheck(): Promise<UpdateStatus> {

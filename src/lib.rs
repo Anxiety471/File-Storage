@@ -2,6 +2,7 @@
 pub mod api;
 pub mod archive;
 pub mod storage;
+pub mod mounts;
 pub mod auth;
 pub mod blob;
 pub mod cli;
