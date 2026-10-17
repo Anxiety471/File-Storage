@@ -70,6 +70,8 @@ pub enum MemoryAction {
     Forget { name: String },
     /// List tags with how many notes use each.
     Tags,
+    /// Show how notes link to each other. Missing notes are marked with `?`.
+    Graph,
 }
 
 #[derive(Subcommand)]
@@ -951,6 +953,27 @@ async fn memory(svc: &Drawer, action: MemoryAction, actor: &str, json: bool) -> 
                 return emit_json(&out);
             }
             println!("trashed {} (restore with: drawer restore {})", out["path"].as_str().unwrap_or_default(), out["id"].as_str().unwrap_or_default());
+        }
+        MemoryAction::Graph => {
+            let g = vault::graph(svc).await?;
+            if json {
+                return emit_json(&g);
+            }
+            if g.nodes.is_empty() {
+                println!("no memories yet");
+            }
+            let name = |id: &str| g.nodes.iter().find(|n| n.id == id).map(|n| if n.path.is_some() { n.name.clone() } else { format!("{}?", n.name) }).unwrap_or_default();
+            for n in g.nodes.iter().filter(|n| n.path.is_some()) {
+                let out: Vec<String> = g.edges.iter().filter(|e| e.0 == n.id).map(|e| name(&e.1)).collect();
+                let back: Vec<String> = g.edges.iter().filter(|e| e.1 == n.id).map(|e| name(&e.0)).collect();
+                println!("{}", n.name);
+                if !out.is_empty() { println!("  -> {}", out.join(", ")); }
+                if !back.is_empty() { println!("  <- {}", back.join(", ")); }
+            }
+            let missing: Vec<&str> = g.nodes.iter().filter(|n| n.path.is_none()).map(|n| n.name.as_str()).collect();
+            if !missing.is_empty() {
+                println!("\nlinked but not written: {}", missing.join(", "));
+            }
         }
         MemoryAction::Tags => {
             let tags = vault::tags(svc).await?;

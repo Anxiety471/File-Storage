@@ -487,6 +487,8 @@ fn memory_commands_save_recall_and_read() {
     assert!(ok(drawer(data, &["memory", "recall", "-t", "project"])).contains("Drawer"));
     assert!(ok(drawer(data, &["memory", "read", "drawer"])).contains("backlinks: [[Alice]]"));
     assert!(ok(drawer(data, &["memory", "tags"])).contains("#infra  1"));
+    let graph = ok(drawer(data, &["memory", "graph"]));
+    assert!(graph.contains("Alice\n  -> Drawer") && graph.contains("Drawer\n  <- Alice"), "{graph}");
     assert!(fail(drawer(data, &["memory", "read", "nope"])).contains("not found"));
     assert!(ok(drawer(data, &["memory", "forget", "Alice"])).starts_with("trashed /memory/people/Alice.md"));
     assert!(fail(drawer(data, &["memory", "read", "Alice"])).contains("not found"));

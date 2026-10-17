@@ -204,6 +204,7 @@ echo "Prefers tabs" | drawer memory remember Preferences -t style --append
 drawer memory recall "file server"      # or: drawer memory recall --tag project
 drawer memory read "Project Drawer"     # content, links and backlinks
 drawer memory forget "Old note"      # to the trash; `drawer restore <id>` undoes it
+drawer memory graph                     # who links to whom; missing notes marked with ?
 drawer memory tags
 ```
 
