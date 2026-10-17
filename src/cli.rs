@@ -195,6 +195,8 @@ pub enum Cmd {
         #[arg(long)]
         check: bool,
     },
+    /// Remove this install: the background service, the web UI and the binary. Your data is kept.
+    Uninstall,
     /// Print a shell completion script, e.g. `drawer completions zsh > ~/.zfunc/_drawer`.
     Completions {
         #[arg(value_enum)]
@@ -299,6 +301,10 @@ async fn dispatch(cli: Cli) -> Result<()> {
     if let Cmd::Update { check } = &cmd {
         // Works on the install, not the store, so it runs before the store check below.
         return crate::update::run(*check);
+    }
+    if let Cmd::Uninstall = &cmd {
+        let data_dir = cli.data_dir.clone().or_else(|| default_data_dir().ok());
+        return crate::update::uninstall(data_dir.as_deref());
     }
     if let Cmd::Completions { shell } = &cmd {
         let mut command = <Cli as clap::CommandFactory>::command();
@@ -591,7 +597,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
             if json { emit_json(&grants) } else { println!("removed {principal} from {}", node.path); Ok(()) }
         }
         Cmd::Doctor => doctor(&svc, &data_dir, json).await,
-        Cmd::Sync(_) | Cmd::Cleanup(_) | Cmd::Backup { .. } | Cmd::Service { .. } | Cmd::McpConfig { .. } | Cmd::Completions { .. } | Cmd::Update { .. } => {
+        Cmd::Sync(_) | Cmd::Cleanup(_) | Cmd::Backup { .. } | Cmd::Service { .. } | Cmd::McpConfig { .. } | Cmd::Completions { .. } | Cmd::Update { .. } | Cmd::Uninstall => {
             unreachable!("handled before the store is opened")
         }
     }

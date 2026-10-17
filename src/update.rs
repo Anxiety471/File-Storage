@@ -150,6 +150,37 @@ pub fn run(check_only: bool) -> Result<()> {
     Ok(())
 }
 
+/// `drawer uninstall`: stop and remove the user service, then delete the web UI and the binary.
+/// The store is never touched; its location is printed so it can be removed by hand.
+pub fn uninstall(data_dir: Option<&Path>) -> Result<()> {
+    let exe = std::env::current_exe()
+        .and_then(|p| p.canonicalize())
+        .context("cannot find the running drawer binary")?;
+    let home = std::env::var_os("HOME").map(PathBuf::from).filter(|p| p.is_absolute());
+    let unit = home
+        .as_ref()
+        .map(|h| h.join(".config/systemd/user/drawer.service"))
+        .filter(|u| cfg!(target_os = "linux") && u.is_file());
+    if let Some(unit) = unit {
+        let _ = Command::new("systemctl").args(["--user", "disable", "--now", "drawer.service"]).status();
+        fs::remove_file(&unit).with_context(|| format!("cannot remove {}", unit.display()))?;
+        let _ = Command::new("systemctl").args(["--user", "daemon-reload"]).status();
+        println!("removed service {}", unit.display());
+    }
+    let share = exe.parent().and_then(Path::parent).map(|p| p.join("share/drawer"));
+    if let Some(share) = share.filter(|s| s.join("ui").is_dir()) {
+        fs::remove_dir_all(share.join("ui")).context("cannot remove the web UI")?;
+        let _ = fs::remove_dir(&share); // only if empty
+        println!("removed web UI {}", share.join("ui").display());
+    }
+    fs::remove_file(&exe).with_context(|| format!("cannot remove {}", exe.display()))?;
+    println!("removed {}", exe.display());
+    if let Some(dir) = data_dir {
+        println!("your data was left in place at {}; delete it yourself if you no longer want it", dir.display());
+    }
+    Ok(())
+}
+
 /// The archive name suffix for this build, matching the targets in the release workflow.
 pub fn target() -> Result<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
