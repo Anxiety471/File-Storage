@@ -513,3 +513,117 @@ async fn search_ranks_names_first_and_reports_lines() {
     let hit = &m.search("needle", 10).await.unwrap()[0];
     assert!(hit.snippet.contains("needle") && hit.snippet.chars().count() < 200, "{}", hit.snippet);
 }
+
+#[tokio::test]
+async fn public_link_can_pin_a_revision() {
+    let (s, _dir) = store().await;
+    let first = s.write("/share.txt", b"original", by("alice", "")).await.unwrap();
+    let fixed = s.create_download_link_with_revision(&first.node.id, "alice", 7, Some(1)).await.unwrap();
+    let latest = s.create_download_link(&first.node.id, "alice", 7).await.unwrap();
+    s.write("/share.txt", b"new", by("alice", "")).await.unwrap();
+    let (_, _, path) = s.download_link_file(&fixed.token).await.unwrap();
+    assert_eq!(tokio::fs::read(path).await.unwrap(), b"original");
+    let (_, _, path) = s.download_link_file(&latest.token).await.unwrap();
+    assert_eq!(tokio::fs::read(path).await.unwrap(), b"new");
+    assert!(s.create_download_link_with_revision(&first.node.id, "alice", 7, Some(999)).await.is_err());
+    assert_eq!(s.list_download_links(&first.node.id, "alice").await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn one_download_link_admits_only_one_concurrent_request() {
+    let (s, _dir) = store().await;
+    let file = s.write("/one.txt", b"one", by("alice", "")).await.unwrap();
+    let link = s.create_download_link_with_options(&file.node.id, "alice", 7, None, Some(1)).await.unwrap();
+    let (a, b) = tokio::join!(s.download_link_file(&link.token), s.download_link_file(&link.token));
+    assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+    let listed = s.list_download_links(&file.node.id, "alice").await.unwrap();
+    assert_eq!(listed[0].downloads, 1);
+    assert!(s.create_download_link_with_options(&file.node.id, "alice", 7, None, Some(0)).await.is_err());
+}
+
+#[tokio::test]
+async fn verified_backup_restore_and_exclusive_maintenance() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("store");
+    let s = Drawer::open(&data).await.unwrap();
+    s.write("/backup.txt", b"snapshot", WriteOpts::new("api", "")).await.unwrap();
+    assert!(Drawer::open_maintenance(&data).await.is_err());
+    drop(s);
+    let snapshot = drawer::backup::create(&data, &dir.path().join("backups")).await.unwrap();
+    drawer::backup::verify(&snapshot).await.unwrap();
+    let restored = dir.path().join("restored");
+    drawer::backup::restore(&snapshot, &restored).await.unwrap();
+    let restored_s = Drawer::open(&restored).await.unwrap();
+    assert_eq!(restored_s.read(Ref::Path("/backup.txt"), None).await.unwrap().1, b"snapshot");
+    assert!(drawer::backup::restore(&snapshot, &restored).await.is_err());
+    std::fs::write(snapshot.join("drawer.db"), b"corrupt").unwrap();
+    assert!(drawer::backup::verify(&snapshot).await.is_err());
+}
+
+#[tokio::test]
+async fn cleanup_preview_preserves_pins_heads_and_shared_blobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let s=Drawer::open(dir.path()).await.unwrap();
+    let first=s.write("/history", b"one", by("api", "")).await.unwrap();
+    s.create_download_link_with_revision(&first.node.id,"api",7,Some(1)).await.unwrap();
+    s.write("/history",b"two",by("api", "")).await.unwrap();
+    s.write("/history",b"three",by("api", "")).await.unwrap();
+    s.write("/history",b"four",by("api", "")).await.unwrap();
+    s.write("/shared",b"two",by("api", "")).await.unwrap();
+    let trash=s.write("/old-trash",b"trash",by("api", "")).await.unwrap();
+    s.trash(Ref::Id(&trash.node.id),None,"api").await.unwrap();
+    drop(s);
+    // Age the trash and physical blobs without changing their contents.
+    let db=sqlx::SqlitePool::connect(&format!("sqlite:{}",dir.path().join("drawer.db").display())).await.unwrap();
+    sqlx::query("UPDATE nodes SET modified_at='2000-01-01T00:00:00.000Z' WHERE trashed=1").execute(&db).await.unwrap(); db.close().await;
+    for folder in std::fs::read_dir(dir.path().join("blobs")).unwrap() { for file in std::fs::read_dir(folder.unwrap().path()).unwrap() { std::fs::File::open(file.unwrap().path()).unwrap().set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()-std::time::Duration::from_secs(3*86400))).unwrap(); } }
+    let mut args=drawer::cleanup::CleanupArgs { keep_revisions:1,trash_days:1,orphan_days:1,apply:false };
+    let preview=drawer::cleanup::cleanup(dir.path(),&args).await.unwrap();
+    assert_eq!(preview.trash_nodes,1); assert_eq!(preview.old_revisions,2); assert_eq!(preview.orphan_blobs,2);
+    assert!(Drawer::open(dir.path()).await.unwrap().read(Ref::Path("/history"),Some(3)).await.is_ok());
+    args.apply=true; drawer::cleanup::cleanup(dir.path(),&args).await.unwrap();
+    let reopened=Drawer::open(dir.path()).await.unwrap();
+    assert_eq!(reopened.read(Ref::Path("/history"),Some(1)).await.unwrap().1,b"one");
+    assert_eq!(reopened.read(Ref::Path("/history"),None).await.unwrap().1,b"four");
+    assert_eq!(reopened.read(Ref::Path("/shared"),None).await.unwrap().1,b"two");
+    assert!(reopened.read(Ref::Path("/history"),Some(3)).await.is_err());
+    assert!(reopened.stat(Ref::Id(&trash.node.id)).await.is_err());
+}
+
+#[tokio::test]
+async fn root_backup_includes_private_user_stores() {
+    let dir=tempfile::tempdir().unwrap(); let data=dir.path().join("root");
+    let root=Drawer::open(&data).await.unwrap(); drop(root);
+    let id=uuid::Uuid::new_v4().to_string();
+    let db=sqlx::SqlitePool::connect(&format!("sqlite:{}",data.join("drawer.db").display())).await.unwrap();
+    sqlx::query("INSERT INTO user_accounts(id,username,password_hash,quota_bytes) VALUES(?,'alice','test-only',100)").bind(&id).execute(&db).await.unwrap(); db.close().await;
+    let private=Drawer::open(&data.join("users").join(&id)).await.unwrap();
+    private.write("/secret",b"private-backup",by("alice", "")).await.unwrap(); drop(private);
+    let snapshot=drawer::backup::create(&data,&dir.path().join("backups")).await.unwrap();
+    let restored=dir.path().join("restored"); drawer::backup::restore(&snapshot,&restored).await.unwrap();
+    let private=Drawer::open(&restored.join("users").join(&id)).await.unwrap();
+    assert_eq!(private.read(Ref::Path("/secret"),None).await.unwrap().1,b"private-backup");
+}
+
+#[tokio::test]
+async fn cleanup_counts_remaining_rows_when_retention_increases() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Drawer::open(dir.path()).await.unwrap();
+    let first = s.write("/history", b"one", by("api", "")).await.unwrap();
+    let pin = s.create_download_link_with_revision(&first.node.id, "api", 7, Some(1)).await.unwrap();
+    for bytes in [b"two".as_slice(), b"three".as_slice(), b"four".as_slice()] {
+        s.write("/history", bytes, by("api", "")).await.unwrap();
+    }
+    drop(s);
+    let mut policy = drawer::cleanup::CleanupArgs { keep_revisions: 1, trash_days: 30, orphan_days: 1, apply: true };
+    drawer::cleanup::cleanup(dir.path(), &policy).await.unwrap();
+    let s = Drawer::open(dir.path()).await.unwrap();
+    s.revoke_download_link(&first.node.id, &pin.id, "api").await.unwrap();
+    drop(s);
+    // Only revisions 1 and 4 remain. Raising the policy to three must retain both.
+    policy.keep_revisions = 3;
+    let report = drawer::cleanup::cleanup(dir.path(), &policy).await.unwrap();
+    assert_eq!(report.old_revisions, 0);
+    let s = Drawer::open(dir.path()).await.unwrap();
+    assert_eq!(s.read(Ref::Path("/history"), Some(1)).await.unwrap().1, b"one");
+}

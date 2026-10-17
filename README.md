@@ -268,3 +268,166 @@ cargo run --release -- serve       # API, MCP and UI on http://127.0.0.1:8787
 CI runs clippy, the Rust tests and the UI build on every push to `main` and every pull request.
 
 Releases: pushing a `v*` tag builds Linux (x86_64, aarch64) and macOS (x86_64, aarch64) binaries and attaches them with `SHA256SUMS` (`.github/workflows/release.yml`).
+
+## Linux background service
+
+`drawer service install` installs and starts a per-user systemd service using your current binary and configured store. Use `--no-start` to write the unit for review, then `systemctl --user daemon-reload && systemctl --user enable --now drawer`. Existing units are never overwritten. `drawer service start|stop|status|uninstall` manages it; uninstall leaves your data in place.
+
+Put `DRAWER_ADMIN_PASSWORD` and `DRAWER_TOKEN` in `~/.config/drawer/env` (create the parent directory and use `chmod 600` on the file) before starting. Do not put secrets in the service unit. Logs: `journalctl --user -u drawer`. To run after logout and at boot, enable user lingering with `loginctl enable-linger "$USER"` if your administrator permits it. Docker deployments should continue using Compose restart policies.
+
+Browser uploads compute SHA-256 incrementally in a worker before sending chunks, pass the expected hash to the server and compare it with the committed revision. Resume IDs include the content hash, so selecting a different same-sized file cannot splice two files together. Hashing is bounded to 4 MiB chunks and works on private HTTP as well as HTTPS.
+
+Public links can be fixed to a specific revision: select **Keep this link on revision N** in the share dialog, or provide `revision` when creating a link over REST. Later edits do not change that link's contents. Default links continue following the latest head. Trash, expiry and revocation apply to both modes.
+
+Share links optionally accept a download limit (1–1,000,000) from the dialog or `max_downloads` in REST. A request consumes a use when an authorized download is issued, even if the recipient cancels the stream. Exhausted links return 404. Concurrent requests reserve uses atomically; blank means unlimited.
+
+## Transfer manager
+
+Open **Transfers** in the sidebar to see active, paused, failed, expired, cancelled and completed uploads. Pause, select the same file to resume/retry, or cancel its staging data. Metadata and progress survive restarts; an expired lease cannot be resumed. The last 200 entries for your actor are shown. Authenticated download requests appear as **issued**; your browser's native download manager owns their completion and retry state.
+
+Select files/folders and choose **Download ZIP**, or use a folder's **Download folder as ZIP** menu. The archive preserves full Drawer-relative paths and empty folders, deduplicates overlapping selections, streams in bounded memory with ZIP64 support, and snapshots revisions at request time. A request supports up to 200 selections/5000 entries; oversized selections fail instead of silently truncating. Password sessions use native streaming downloads; legacy bearer-token browsers still buffer the resulting ZIP in the browser.
+
+### Read-only host folder mounts
+
+Register a server directory from the local operator CLI, using the server's store:
+
+```sh
+drawer mount add Documents /srv/documents
+drawer mount list
+drawer mount remove Documents
+```
+
+Open **Host folders** in the sidebar to browse registered directories, select a file,
+and import it into a new Drawer path. Imports stream through a temporary file, are
+limited to 512 MiB each, and never overwrite an existing Drawer file. The original
+host file is not modified. Removing a registration preserves imported files.
+Registration requires local CLI access; HTTP clients can only use registered roots.
+Capability-based filesystem access prevents parent traversal and symlink escapes.
+Symlinks are omitted from directory listings. Only register directories you intend
+to expose to every authenticated operator of this instance. Container deployments
+must bind-mount the directory into the container first. This exposes host folders
+inside Drawer; it does not provide an operating-system FUSE mount.
+
+### Activity history
+
+The sidebar's **Activity history** records REST changes, file reads, public share
+requests, logins (including failures), and MCP transport requests. Events persist
+in SQLite and can be paginated with `GET /drawer/v1/activity?before=ID&limit=100`.
+Routine listing/polling is excluded. Only method, route template, actor, HTTP status
+and time are stored: no request bodies, query strings, credentials or link tokens.
+MCP entries describe transport requests, not individual tool calls. HTTP success
+means a response was issued, not that a browser completed its download. CLI writes
+are not included. Events are retained until the operator prunes the database;
+this local history is best-effort and is not a tamper-proof compliance log.
+
+### Verified snapshots and backup schedules
+
+Stop Drawer before offline snapshots. Current Drawer processes hold a shared
+store lease; maintenance takes an exclusive lease and refuses an active store.
+Stop older binaries too, since they do not know about this lease.
+
+```sh
+drawer backup create --directory /other-disk/drawer-backups
+drawer backup list --directory /other-disk/drawer-backups
+drawer backup verify /other-disk/drawer-backups/drawer-UUID
+drawer backup restore /other-disk/drawer-backups/drawer-UUID --to /new/store
+# Linux systemd user service; briefly stops/restarts drawer.service on each run:
+drawer backup schedule --directory /other-disk/drawer-backups --calendar daily
+drawer backup unschedule
+```
+
+Snapshots contain a compact SQLite database, every referenced revision blob, and
+a SHA-256 manifest. Creation verifies every file, SQLite integrity/foreign keys,
+file head references and revision blob hashes before publishing the directory.
+Restore only accepts a destination that does not exist. Interrupted restores leave
+that new directory for inspection. Original stores and snapshots are preserved.
+Host mount registrations are backed up; their external contents are not. Staged
+uploads are excluded and must be re-uploaded after a restore. Keep snapshots on a
+separate device and protect them like the original store. No retention deletion
+is automatic. `--no-start` writes schedule units for inspection without systemd.
+
+### Offline storage cleanup
+
+Stop Drawer and make a verified backup first. Preview retention candidates with:
+
+```sh
+drawer cleanup --keep-revisions 10 --trash-days 30 --orphan-days 1
+# Apply the same policy explicitly:
+drawer cleanup --keep-revisions 10 --trash-days 30 --orphan-days 1 --apply
+```
+
+Cleanup requires an exclusive store lease. Preview is the default. It permanently
+purges expired trash subtrees and old revisions, retaining each head, the newest
+N revisions and revisions pinned by unexpired download links. Blob collection
+uses references remaining after that policy, so shared/deduplicated content is
+preserved. Only valid SHA-256 blob filenames older than the grace period qualify.
+Metadata commits before unlinks; interrupted removal can leave extra orphans for
+the next run. Recent orphans, temporary files and staged uploads are not deleted.
+
+### Upload-only folder links
+
+Use a folder's menu → **Create upload-only link**. Set expiry (up to 30 days),
+file count and total byte budget, then copy the one-time-displayed URL. Recipients
+get a standalone upload page; they cannot list, read or overwrite Drawer files.
+Names receive random prefixes. Revoke links from the same dialog. Individual files
+are limited to 512 MiB and requests to 15 minutes. Uploads require Content-Length,
+reserve budget atomically before streaming, and stage to disk with bounded memory.
+Failed uploads refund reservations; a crash or disconnected handler can leave a
+reservation consumed, so create a replacement link if necessary. Revocation or
+folder changes are rechecked at commit. Only token hashes are stored. Treat these
+capability links as secrets; file contents are not scanned for malware.
+
+### Named users and private quotas
+
+With `DRAWER_ADMIN_PASSWORD` enabled, sign in as `admin` and open **Users and
+quotas** to create accounts, set quotas, or disable access. New accounts require
+12-character passwords and store salted Argon2id hashes. Sign in with the account
+name and password; the existing machine token remains an administrator credential.
+Each account gets an independent store under `users/UUID`, including isolated MCP
+sessions, search, revisions, transfers and activity. Named users cannot manage
+accounts, expose host mounts or install server updates. Disabling an account
+blocks existing sessions and its public links on their next request.
+
+Quota is logical revision content, including history and trash; identical revisions
+on different files each count. It is not a host filesystem hard quota. New staged
+transfers reserve against existing transfer sizes. Lower quotas block writes until
+usage fits. Share through expiring download/upload-only URLs, which include the
+workspace identity; node permission grants do not bridge private workspaces.
+Root snapshots include existing user stores, with an exclusive lease on each.
+Cleanup targets only the selected store; operators may select a user's store with
+`--data-dir` when offline maintenance is needed. Back up the whole root before
+changing account data or cleaning private history.
+
+### Desktop folder sync
+
+```sh
+# Credentials stay in environment variables, never in sync state or command arguments.
+export DRAWER_TOKEN='your-machine-token'
+drawer sync ~/Documents/Drawer --url https://drawer.example.com --remote /Desktop
+# Keep synchronizing and retry offline failures every 30 seconds:
+drawer sync ~/Documents/Drawer --url https://drawer.example.com --remote /Desktop --watch
+# Named account: unset DRAWER_TOKEN; set DRAWER_SYNC_USERNAME and DRAWER_SYNC_PASSWORD.
+# For a server with authentication disabled, pass --anonymous explicitly.
+```
+
+Sync supports files up to 4 GiB, empty folders and up to 5000 entries per selected
+folder. It hashes local files incrementally, uses guarded resumable uploads, pins
+downloads to immutable revisions, and verifies downloaded SHA-256 hashes before
+installing them. Pending upload IDs and offsets survive restarts. Offline errors
+preserve local files and state; `--watch` retries until interrupted.
+
+When both sides change, the remote revision becomes the main local file and the
+local version is preserved as `.conflict-UUID`, then uploaded on the next pass.
+Previous local inodes from downloads are kept in `.drawer-sync/previous` for
+recovery, including late writes from editors with open handles. Remove old recovery
+copies manually when no longer needed. `.drawer-sync` contains durable state,
+uses an exclusive local lock, and is never uploaded. Symlinks are skipped; portable
+relative paths and capability-based access keep downloads inside the local root.
+
+Deletion and rename propagation are deliberately absent: a surviving copy restores
+its missing peer, and a rename can produce a second copy. This is a conservative
+content sync, not a filesystem mirror or native desktop GUI. Choose a different
+local directory for each server/account/remote folder; the durable binding rejects
+accidental reuse. Download retries restart that file; uploads resume from the
+server's committed offset. Servers must remain at the configured URL (redirects
+are rejected so credentials are not forwarded to another origin).

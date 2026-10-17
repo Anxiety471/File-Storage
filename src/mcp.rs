@@ -27,7 +27,7 @@ pub struct DrawerMcp {
     svc: Drawer,
     /// Actor for calls that don't pass `author`; the client's name is used when this is unset.
     author: Option<String>,
-    verified_admin: bool,
+    verified_actor: Option<String>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -44,7 +44,7 @@ impl DrawerMcp {
             tool.title = Some(title.into());
             tool.annotations = Some(ann);
         }
-        Self { svc, author: None, verified_admin: false, tool_router }
+        Self { svc, author: None, verified_actor: None, tool_router }
     }
 
     /// Record `author` on changes when a call doesn't name one. Empty means unset.
@@ -55,13 +55,15 @@ impl DrawerMcp {
 
     /// HTTP password mode has one verified identity, regardless of tool arguments.
     pub fn with_verified_admin(mut self, enabled: bool) -> Self {
-        self.verified_admin = enabled;
+        self.verified_actor = enabled.then(|| "admin".into());
         self
     }
 
+    pub fn with_verified_actor(mut self, actor: String) -> Self { self.verified_actor = Some(actor); self }
+
     /// Who a call acts as: its `author`, else the configured author, else the client's name.
     fn actor(&self, author: Option<String>, ctx: &RequestContext<RoleServer>) -> String {
-        if self.verified_admin { return "admin".into(); }
+        if let Some(actor) = &self.verified_actor { return actor.clone(); }
         author
             .filter(|a| !a.trim().is_empty())
             .or_else(|| self.author.clone())
@@ -454,6 +456,7 @@ impl DrawerMcp {
             comment: a.comment.unwrap_or_default(),
             properties: a.properties.unwrap_or_default(),
             if_head_revision: a.if_head_revision,
+            required_parent: None,
         };
         let data = if base64_wanted(&a.encoding)? {
             BASE64.decode(a.content.trim()).map_err(|e| format!("content is not valid base64: {e}"))?

@@ -43,7 +43,9 @@ impl BlobStore {
     }
 
     /// Stream a staged file into content-addressed storage without loading it into RAM.
-    pub async fn put_file(&self, staged: &Path) -> Result<(String, i64)> {
+    pub async fn put_file(&self, staged: &Path) -> Result<(String, i64)> { self.put_file_checked(staged, None).await }
+
+    pub async fn put_file_checked(&self, staged: &Path, expected: Option<&str>) -> Result<(String, i64)> {
         let mut file = tokio::fs::File::open(staged).await?;
         let mut sha = Sha256::new();
         let mut length = 0i64;
@@ -55,6 +57,7 @@ impl BlobStore {
             length += n as i64;
         }
         let hash = hex::encode(sha.finalize());
+        if expected.is_some_and(|expected| expected != hash) { return Err(Error::Invalid("uploaded file SHA-256 checksum mismatch".into())); }
         let path = self.path_for(&hash)?;
         if !tokio::fs::try_exists(&path).await? {
             tokio::fs::create_dir_all(path.parent().expect("blob directory")).await?;

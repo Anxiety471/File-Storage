@@ -450,3 +450,28 @@ fn userprofile_is_used_when_home_is_empty() {
     assert!(home.join(".drawer/drawer.db").is_file());
     assert!(!tmp.path().join(".drawer").exists());
 }
+
+#[test]
+fn service_install_writes_unit_without_starting_or_creating_store() {
+    if !cfg!(target_os = "linux") { return; }
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    ok(standalone(&home, tmp.path(), &["service", "install", "--no-start"]).output().unwrap());
+    let unit = std::fs::read_to_string(home.join(".config/systemd/user/drawer.service")).unwrap();
+    assert!(unit.contains(home.join(".drawer").to_str().unwrap()));
+    assert!(!home.join(".drawer").exists());
+    fail(standalone(&home, tmp.path(), &["service", "install", "--no-start"]).output().unwrap());
+}
+
+#[test]
+fn backup_schedule_can_be_inspected_without_starting_systemd() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_drawer")).env("HOME",dir.path()).args(["--data-dir",dir.path().join("store").to_str().unwrap(),"backup","schedule","--directory",dir.path().join("backups").to_str().unwrap(),"--no-start"]).output().unwrap();
+    ok(out);
+    let units = dir.path().join(".config/systemd/user");
+    let service = std::fs::read_to_string(units.join("drawer-backup.service")).unwrap();
+    assert!(service.contains("backup scheduled --directory"));
+    assert!(service.contains("UMask=0077"));
+    assert!(std::fs::read_to_string(units.join("drawer-backup.timer")).unwrap().contains("OnCalendar=daily"));
+    assert!(!dir.path().join("store").exists());
+}

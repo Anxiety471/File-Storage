@@ -49,6 +49,16 @@ pub enum Cmd {
     Serve(ServeArgs),
     /// Speak MCP over stdin and stdout, for clients that start drawer as a subprocess.
     Stdio,
+    /// Install or manage the Linux user background service.
+    Service { #[command(subcommand)] action: crate::background::ServiceAction },
+    /// Synchronize a local desktop folder with a remote Drawer workspace.
+    Sync(crate::sync::SyncArgs),
+    /// Preview or apply offline retention and orphan-blob cleanup.
+    Cleanup(crate::cleanup::CleanupArgs),
+    /// Create, verify, restore and schedule offline snapshots.
+    Backup { #[command(subcommand)] action: crate::backup::BackupAction },
+    /// Register and manage read-only host folder mounts.
+    Mount { #[command(subcommand)] action: crate::mounts::MountAction },
     /// List a folder. Folders are shown with a trailing slash.
     Ls {
         #[arg(default_value = "/")]
@@ -295,12 +305,16 @@ async fn dispatch(cli: Cli) -> Result<()> {
         clap_complete::generate(*shell, &mut command, "drawer", &mut std::io::stdout());
         return Ok(());
     }
+    if let Cmd::Sync(args) = &cmd { return crate::sync::run(args).await; }
     // Resolve only for commands that use a store. Help, completions and self-update
     // must also work in minimal environments without a home directory.
     let data_dir = match cli.data_dir {
         Some(path) => path,
         None => default_data_dir()?,
     };
+    if let Cmd::Service { action } = &cmd { return crate::background::run(action, &data_dir); }
+    if let Cmd::Backup { action } = &cmd { return crate::backup::cli(action, &data_dir).await; }
+    if let Cmd::Cleanup(args) = &cmd { println!("{}",serde_json::to_string_pretty(&crate::cleanup::cleanup(&data_dir,args).await?)?); return Ok(()); }
     if let Cmd::McpConfig { format, url, name } = &cmd {
         print!("{}", mcp_config(*format, &data_dir, url.as_deref(), name)?);
         return Ok(());
@@ -325,6 +339,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
     let actor = cli.author.unwrap_or_else(default_author);
     let json = cli.json;
     match cmd {
+        Cmd::Mount { action } => crate::mounts::cli(&svc, action).await,
         Cmd::Serve(args) => serve(svc, &data_dir, args).await,
         Cmd::Stdio => {
             use rmcp::ServiceExt;
@@ -576,7 +591,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
             if json { emit_json(&grants) } else { println!("removed {principal} from {}", node.path); Ok(()) }
         }
         Cmd::Doctor => doctor(&svc, &data_dir, json).await,
-        Cmd::McpConfig { .. } | Cmd::Completions { .. } | Cmd::Update { .. } => {
+        Cmd::Sync(_) | Cmd::Cleanup(_) | Cmd::Backup { .. } | Cmd::Service { .. } | Cmd::McpConfig { .. } | Cmd::Completions { .. } | Cmd::Update { .. } => {
             unreachable!("handled before the store is opened")
         }
     }
@@ -772,7 +787,7 @@ async fn target_path(svc: &Drawer, dest: &str, name: &str) -> Result<String> {
 
 fn write_opts(actor: &str, comment: &str, props: Vec<(String, String)>, if_head_revision: Option<i64>) -> WriteOpts {
     let properties: Properties = props.into_iter().collect();
-    WriteOpts { author: actor.into(), comment: comment.into(), properties, if_head_revision }
+    WriteOpts { author: actor.into(), comment: comment.into(), properties, if_head_revision, required_parent: None }
 }
 
 fn report_write(out: &WriteOutcome, json: bool) -> Result<()> {

@@ -384,3 +384,10 @@ tr:hover .row-actions, tr.menu-open .row-actions, .row-actions:focus-within { op
   .topbar > .update-btn { grid-column: 2; justify-self: start; }
   .topbar > .btn:not(.update-btn) { grid-column: 3; justify-self: end; }
 }
+
+.operations-modal { max-width: 760px; max-height: 88vh; overflow: auto; }
+.operations-list { list-style: none; margin: 12px 0; padding: 0; }
+.operations-list li { display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--line); padding: 12px 0; overflow-wrap: anywhere; }
+.operations-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.operations-list progress { width: 100%; }
+button.nav { border: 0; background: none; font: inherit; cursor: pointer; text-align: left; }

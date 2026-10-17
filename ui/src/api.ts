@@ -1,3 +1,4 @@
+import { uploadChecksum } from "./checksum";
 export interface Node {
   id: string;
   parent_id: string | null;
@@ -58,12 +59,16 @@ export interface SearchHit {
 }
 
 export interface DownloadLink {
+  max_downloads: number | null;
+  downloads: number;
+  revision: number | null;
   id: string;
   created_at: string;
   expires_at: string;
 }
 
 export interface CreatedDownloadLink extends DownloadLink {
+  url_path: string;
   token: string;
 }
 
@@ -142,7 +147,29 @@ export interface AuthStatus {
   user: string | null;
 }
 
+export interface StorageStats { quota_bytes: number | null; live_files: number; live_bytes: number; revisions: number; revision_bytes: number; blob_bytes: number; unreferenced_blob_bytes: number; staging_bytes: number; database_bytes: number; filesystem_total_bytes: number; filesystem_available_bytes: number; }
+
+export interface HostMount { id: string; name: string }
+export interface HostEntry { name: string; path: string; kind: "folder" | "file"; size: number }
+
+export interface ActivityEvent { id: number; actor: string; method: string; route: string; status: number; created_at: string }
+
+export interface UploadLink { id: string; expires_at: string; max_files: number; max_bytes: number; files_uploaded: number; bytes_uploaded: number }
+
+export interface UserAccount { id: string; username: string; quota_bytes: number; disabled: boolean }
+
 export const api = {
+  async users(): Promise<UserAccount[]> { return (await check(await fetch(`${BASE}/users`, { headers: headers() }))).json(); },
+  async createUser(username: string, password: string, quota_bytes: number): Promise<void> { await check(await fetch(`${BASE}/users`, json("POST", { username, password, quota_bytes }))); },
+  async changeUser(id: string, changes: { quota_bytes?: number; disabled?: boolean }): Promise<void> { await check(await fetch(`${BASE}/users/${id}`, json("PATCH", changes))); },
+  async uploadLinks(id: string): Promise<UploadLink[]> { return (await check(await fetch(`${BASE}/nodes/${id}/upload-links`, { headers: headers() }))).json(); },
+  async createUploadLink(id: string, days: number, max_files: number, max_bytes: number): Promise<{ token: string; url_path: string }> { return (await check(await fetch(`${BASE}/nodes/${id}/upload-links`, json("POST", { days, max_files, max_bytes })))).json(); },
+  async revokeUploadLink(id: string, link: string): Promise<void> { await check(await fetch(`${BASE}/nodes/${id}/upload-links/${link}`, { method: "DELETE", headers: headers() })); },
+  async activity(before?: number): Promise<ActivityEvent[]> { return (await check(await fetch(`${BASE}/activity${before ? `?before=${before}` : ""}`, { headers: headers() }))).json(); },
+  async mounts(): Promise<HostMount[]> { return (await check(await fetch(`${BASE}/mounts`, { headers: headers() }))).json(); },
+  async hostEntries(id: string, path: string): Promise<HostEntry[]> { return (await check(await fetch(`${BASE}/mounts/${encodeURIComponent(id)}/entries?path=${encodeURIComponent(path)}`, { headers: headers() }))).json(); },
+  async importHost(id: string, path: string, destination: string): Promise<WriteOutcome> { return (await check(await fetch(`${BASE}/mounts/${encodeURIComponent(id)}/import`, json("POST", { path, destination })))).json(); },
+  async storage(): Promise<StorageStats> { return (await check(await fetch(`${BASE}/storage`, { headers: headers() }))).json(); },
   /** Is a newer release published than the one this server runs? */
   async updateCheck(): Promise<UpdateStatus> {
     const r = await check(await fetch(`${BASE}/update`, { headers: headers() }));
@@ -158,17 +185,29 @@ export const api = {
     if (!response.ok) throw new ApiError(response.status, "Password authentication is not configured");
     return response.json();
   },
-  async login(password: string): Promise<void> {
+  async login(password: string, username = "admin"): Promise<void> {
     const response = await fetch("/auth/login", {
       method: "POST", credentials: "same-origin",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username, password }),
     });
-    if (!response.ok) throw new ApiError(response.status, "Incorrect administrator password");
+    if (!response.ok) throw new ApiError(response.status, "Incorrect username or password");
     window.dispatchEvent(new Event(AUTHENTICATED_EVENT));
   },
   async logout(): Promise<void> {
     await check(await fetch("/auth/logout", { method: "POST", credentials: "same-origin" }));
+  },
+  async downloadArchive(ids: string[]): Promise<void> {
+    const url = `${BASE}/archive?ids=${encodeURIComponent(ids.join(","))}`;
+    const status = await api.authStatus().catch(() => null);
+    if (status?.authenticated) {
+      const a = document.createElement("a"); a.href = url; a.download = "selection.zip"; a.click();
+    } else {
+      const response = await check(await fetch(url, { headers: headers() }));
+      const objectUrl = URL.createObjectURL(await response.blob());
+      const a = document.createElement("a"); a.href = objectUrl; a.download = "selection.zip"; a.click();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 10000);
+    }
   },
   async tree(path: string): Promise<Node[]> {
     const r = await check(await fetch(`${BASE}/tree?${q(path)}`, { headers: headers() }));
@@ -236,29 +275,35 @@ export const api = {
     file: File,
     onProgress: (done: number, total: number) => void,
     signal?: AbortSignal,
+    transferId?: string,
   ): Promise<WriteOutcome> {
-    const key = `drawer:transfer:${path}:${file.size}:${file.lastModified}`;
+    onProgress(0, file.size);
+    const sha256 = await uploadChecksum(file, signal);
+    const key = `drawer:transfer:v2:${path}:${sha256}`;
     const opts = { headers: headers() };
-    let id: string | null = null;
-    try { id = localStorage.getItem(key); } catch { /* Storage may be blocked. */ }
+    let id: string | null = transferId ?? null;
+    try { id ??= localStorage.getItem(key); } catch { /* Storage may be blocked. */ }
     let offset = 0;
     if (id) {
       try {
         const r = await check(await fetch(`${BASE}/transfers/${encodeURIComponent(id)}`, opts));
-        const state: { received: number; size: number; path: string } = await r.json();
-        if (state.size !== file.size || state.path !== path) throw new Error("Upload changed");
+        const state: { received: number; size: number; path: string; sha256: string | null } = await r.json();
+        if (state.size !== file.size || state.path !== path || state.sha256 !== sha256) throw new Error("Upload changed");
         offset = state.received;
-      } catch {
+      } catch (error) {
+        if (transferId || !(error instanceof ApiError) || error.status !== 404) throw error;
         try { localStorage.removeItem(key); } catch { /* Optional resume cache. */ }
         id = null;
       }
     }
     if (!id) {
-      const r = await check(await fetch(`${BASE}/transfers`, json("POST", { path, size: file.size })));
+      const r = await check(await fetch(`${BASE}/transfers`, json("POST", { path, size: file.size, sha256 })));
       const state: { id: string } = await r.json();
       id = state.id;
       try { localStorage.setItem(key, id); } catch { /* Uploads still work without resume caching. */ }
     }
+    await api.changeTransfer(id, "active");
+    try {
     onProgress(offset, file.size);
     while (offset < file.size) {
       if (signal?.aborted) throw new DOMException("Upload paused", "AbortError");
@@ -278,8 +323,23 @@ export const api = {
       method: "POST", headers: headers(), signal,
     }));
     const outcome: WriteOutcome = await r.json();
+    if (outcome.node.hash !== sha256) throw new Error("Server returned a different file checksum");
     try { localStorage.removeItem(key); } catch { /* Optional resume cache. */ }
     return outcome;
+    } catch (error) {
+      if (signal?.aborted) await api.changeTransfer(id, "paused").catch(() => {});
+      throw error;
+    }
+  },
+  async transfers(): Promise<TransferRecord[]> {
+    const r = await check(await fetch(`${BASE}/transfers`, { headers: headers() }));
+    return (await r.json()).transfers;
+  },
+  async changeTransfer(id: string, status: "paused" | "active"): Promise<void> {
+    await check(await fetch(`${BASE}/transfers/${encodeURIComponent(id)}`, json("PATCH", { status })));
+  },
+  async cancelTransfer(id: string): Promise<void> {
+    await check(await fetch(`${BASE}/transfers/${encodeURIComponent(id)}`, { method: "DELETE", headers: headers() }));
   },
   // Moves the file to the trash. Restore it from the Trash view.
   async trash(path: string): Promise<void> {
@@ -338,8 +398,8 @@ export const api = {
     const r = await check(await fetch(`${BASE}/nodes/${encodeURIComponent(id)}/links`, { headers: headers() }));
     return (await r.json()).links;
   },
-  async createLink(id: string, days = 7): Promise<CreatedDownloadLink> {
-    const r = await check(await fetch(`${BASE}/nodes/${encodeURIComponent(id)}/links`, json("POST", { expires_in_days: days })));
+  async createLink(id: string, days = 7, revision?: number, maxDownloads?: number): Promise<CreatedDownloadLink> {
+    const r = await check(await fetch(`${BASE}/nodes/${encodeURIComponent(id)}/links`, json("POST", { expires_in_days: days, revision, max_downloads: maxDownloads })));
     return r.json();
   },
   async revokeLink(id: string, linkId: string): Promise<void> {
@@ -354,3 +414,5 @@ export const api = {
     return (await r.json()).hits;
   },
 };
+
+export interface TransferRecord { id: string; path: string; size: number; received: number; status: string; direction: string; error: string | null; updated_at: string }

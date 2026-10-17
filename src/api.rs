@@ -114,7 +114,9 @@ struct ShareBody {
 
 #[derive(Deserialize)]
 struct LinkBody {
+    max_downloads: Option<i64>,
     expires_in_days: Option<i64>,
+    revision: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -170,15 +172,23 @@ pub async fn update_install() -> Result<Json<Value>> {
 pub fn router() -> Router<Drawer> {
     Router::new()
         .route("/health", get(health))
+        .route("/users", get(crate::accounts::list).post(crate::accounts::create))
+        .route("/users/{id}", axum::routing::patch(crate::accounts::change))
         .route("/tree", get(tree))
+        .route("/archive", get(crate::archive::download))
+        .route("/storage", get(crate::storage::stats))
+        .route("/activity", get(crate::activity::list))
+        .route("/mounts", get(crate::mounts::list))
+        .route("/mounts/{id}/entries", get(crate::mounts::browse))
+        .route("/mounts/{id}/import", post(crate::mounts::import))
         .route("/recent", get(recent))
         .route("/update", get(update_check).post(update_install))
         .route("/diff", get(diff))
         .route("/edit", post(edit))
         .route("/folders", post(mkdir).delete(delete_file))
         .route("/files", get(read_file).put(write_file).delete(delete_file))
-        .route("/transfers", post(crate::transfers::start))
-        .route("/transfers/{id}", get(crate::transfers::status).put(crate::transfers::append).layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024)).delete(crate::transfers::cancel))
+        .route("/transfers", get(crate::transfers::list).post(crate::transfers::start))
+        .route("/transfers/{id}", get(crate::transfers::status).patch(crate::transfers::change).put(crate::transfers::append).layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024)).delete(crate::transfers::cancel))
         .route("/transfers/{id}/complete", post(crate::transfers::complete))
         .route("/files/meta", get(meta))
         .route("/revisions", get(revisions))
@@ -186,6 +196,8 @@ pub fn router() -> Router<Drawer> {
         .route("/copy", post(copy))
         .route("/move", post(move_to))
         .route("/nodes/{id}", axum::routing::patch(update_node).delete(purge_node))
+        .route("/nodes/{id}/upload-links", get(crate::deposits::list).post(crate::deposits::create))
+        .route("/nodes/{id}/upload-links/{link}", axum::routing::delete(crate::deposits::revoke))
         .route("/nodes/{id}/links", get(list_links).post(create_link))
         .route("/nodes/{id}/links/{link_id}", axum::routing::delete(revoke_link))
         .route("/nodes/{id}/permissions", get(list_permissions).put(share))
@@ -245,6 +257,7 @@ fn write_opts(h: &HeaderMap, if_head_revision: Option<i64>) -> Result<WriteOpts>
         comment: header_str(h, "x-drawer-comment", ""),
         properties,
         if_head_revision,
+        required_parent: None,
     })
 }
 
@@ -268,7 +281,7 @@ async fn diff(State(s): State<Drawer>, Query(q): Query<DiffQ>) -> Result<Json<Va
 }
 
 /// Replace `old_string` with `new_string` in a text file, as one guarded revision.
-async fn edit(State(s): State<Drawer>, verified: Option<axum::Extension<crate::auth::VerifiedAdmin>>, headers: HeaderMap, Json(b): Json<EditBody>) -> Result<Json<Value>> {
+async fn edit(State(s): State<Drawer>, verified: Option<axum::Extension<crate::auth::VerifiedActor>>, headers: HeaderMap, Json(b): Json<EditBody>) -> Result<Json<Value>> {
     let mut opts = WriteOpts::new(body_actor(verified.is_some(), b.author, &headers), b.comment.unwrap_or_default());
     opts.if_head_revision = b.if_head_revision;
     let e = Edit { old: b.old_string, new: b.new_string, replace_all: b.replace_all };
@@ -323,6 +336,10 @@ async fn read_file(State(s): State<Drawer>, Query(q): Query<PathQ>, req: HeaderM
         file.seek(std::io::SeekFrom::Start(start)).await?;
     }
     let count = if total == 0 { 0 } else { end - start + 1 };
+    if q.download.unwrap_or(false) {
+        let node = s.stat(target(&q)?).await?;
+        s.record_download(&actor(&req), &node.path, rev.size).await?;
+    }
     let mut resp = Body::from_stream(ReaderStream::new(file.take(count))).into_response();
     if range.is_some() {
         *resp.status_mut() = axum::http::StatusCode::PARTIAL_CONTENT;
@@ -379,13 +396,13 @@ async fn revisions(State(s): State<Drawer>, Query(q): Query<PathQ>) -> Result<Js
     Ok(Json(json!({ "revisions": s.revisions(target(&q)?).await? })))
 }
 
-async fn rollback(State(s): State<Drawer>, verified: Option<axum::Extension<crate::auth::VerifiedAdmin>>, headers: HeaderMap, Json(b): Json<RollbackBody>) -> Result<Json<Value>> {
+async fn rollback(State(s): State<Drawer>, verified: Option<axum::Extension<crate::auth::VerifiedActor>>, headers: HeaderMap, Json(b): Json<RollbackBody>) -> Result<Json<Value>> {
     let mut opts = WriteOpts::new(body_actor(verified.is_some(), b.author, &headers), b.comment.unwrap_or_default());
     opts.if_head_revision = b.if_head_revision;
     Ok(out(s.rollback(pick(&b.id, &b.path)?, b.revision, opts).await?))
 }
 
-async fn copy(State(s): State<Drawer>, verified: Option<axum::Extension<crate::auth::VerifiedAdmin>>, headers: HeaderMap, Json(b): Json<CopyBody>) -> Result<Json<Value>> {
+async fn copy(State(s): State<Drawer>, verified: Option<axum::Extension<crate::auth::VerifiedActor>>, headers: HeaderMap, Json(b): Json<CopyBody>) -> Result<Json<Value>> {
     let mut opts = WriteOpts::new(body_actor(verified.is_some(), b.author, &headers), b.comment.unwrap_or_default());
     opts.if_head_revision = b.if_head_revision;
     Ok(out(s.copy(pick(&b.from_id, &b.from)?, &b.to, b.source_revision, opts).await?))
@@ -418,7 +435,10 @@ async fn create_link(
     headers: HeaderMap,
     Json(body): Json<LinkBody>,
 ) -> Result<Json<Value>> {
-    Ok(out(s.create_download_link(&id, &actor(&headers), body.expires_in_days.unwrap_or(7)).await?))
+    let link = s.create_download_link_with_options(&id, &actor(&headers), body.expires_in_days.unwrap_or(7), body.revision, body.max_downloads).await?;
+    let mut value = serde_json::to_value(&link).expect("serializable");
+    value["url_path"] = json!(format!("{}/s/{}",s.public_prefix,link.token));
+    Ok(Json(value))
 }
 
 async fn list_links(State(s): State<Drawer>, Path(id): Path<String>, headers: HeaderMap) -> Result<Json<Value>> {
@@ -484,5 +504,5 @@ async fn search(State(s): State<Drawer>, Query(q): Query<SearchQ>) -> Result<Jso
 }
 
 fn body_actor(verified: bool, supplied: Option<String>, headers: &HeaderMap) -> String {
-    if verified { "admin".into() } else { supplied.unwrap_or_else(|| actor(headers)) }
+    if verified { actor(headers) } else { supplied.unwrap_or_else(|| actor(headers)) }
 }

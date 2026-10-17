@@ -1,3 +1,9 @@
+import { UsersPanel } from "./UsersPanel";
+import { UploadLinksDialog } from "./UploadLinksDialog";
+import { ActivityPanel } from "./ActivityPanel";
+import { MountsPanel } from "./MountsPanel";
+import { StoragePanel } from "./StoragePanel";
+import { TransfersPanel } from "./TransfersPanel";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, Diff, DownloadLink, Node, Revision, SearchHit, setToken, UNAUTHORIZED_EVENT, AUTHENTICATED_EVENT, UpdateStatus } from "./api";
 import { Badge, extOf, fileType, isTextViewer } from "./filetypes";
@@ -40,9 +46,10 @@ type Dialog =
       initial: string;
       action: string;
       secret?: boolean;
+      username?: boolean;
       /** Select only the name before the extension, like Drive. Off for paths and tokens. */
       selectStem?: boolean;
-      submit: (v: string) => Promise<void>;
+      submit: (v: string, username?: string) => Promise<void>;
     }
   | { kind: "confirm"; title: string; body: string; action: string; danger?: boolean; submit: () => Promise<void> };
 
@@ -142,14 +149,20 @@ export function App() {
   const [file, setFile] = useState<string | null>(initial.file);
   const [dirty, setDirty] = useState(false);
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  const [usersManager, setUsersManager] = useState(false);
+  const [activityManager, setActivityManager] = useState(false);
+  const [mountManager, setMountManager] = useState(false);
+  const [storageManager, setStorageManager] = useState(false);
+  const [transferManager, setTransferManager] = useState(false);
   const [shareTarget, setShareTarget] = useState<Node | null>(null);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [toast, setToast] = useState<Toast | null>(null);
   const [newMenu, setNewMenu] = useState(false);
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  const [currentUser, setCurrentUser] = useState<string | null>(null);
   const [signedIn, setSignedIn] = useState(false);
   useEffect(() => {
-    api.authStatus().then((status) => setSignedIn(status.authenticated)).catch(() => {});
+    api.authStatus().then((status) => { setSignedIn(status.authenticated); setCurrentUser(status.user); }).catch(() => {});
   }, []);
   const [sort, setSort] = useState<Sort>(loadSort);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -255,14 +268,16 @@ export function App() {
         kind: "prompt",
         title: passwordMode ? "Sign in to Drawer" : "Access token",
         label: passwordMode
-          ? "Enter the administrator password. Drawer will use a private session cookie, not store your password in the browser."
+          ? "Password"
           : "This Drawer runs with DRAWER_TOKEN. Paste the token to continue; it is kept in this browser.",
         initial: "",
         action: "Continue",
         secret: true,
-        submit: async (v) => {
+        username: passwordMode,
+        submit: async (v, username) => {
           if (passwordMode) {
-            await api.login(v);
+            await api.login(v, username);
+            setCurrentUser((await api.authStatus()).user);
             setSignedIn(true);
           } else setToken(v);
           asking.current = false;
@@ -442,10 +457,7 @@ export function App() {
     },
   });
 
-  const bulkDownload = () => run(async () => {
-    for (const n of chosen.filter((n) => n.kind === "file")) await api.download(n.path);
-    notify("Downloads requested. Your browser may require permission for multiple downloads.");
-  });
+  const bulkDownload = () => run(() => api.downloadArchive(chosen.map((n) => n.id)));
 
   const newFolder = () => {
     setNewMenu(false);
@@ -647,6 +659,8 @@ export function App() {
           <button type="button" className="btn" onClick={() => run(async () => {
             await api.logout();
             setSignedIn(false);
+            setCurrentUser(null);
+            setUsersManager(false);
             setUpdate(null);
             setNodes([]);
             setFile(null);
@@ -695,6 +709,11 @@ export function App() {
           {navItem("recent", "clock", "Recent")}
           {navItem("starred", "star", "Starred")}
           {navItem("trash", "trash", "Trash")}
+          {currentUser === "admin" && <button type="button" className="nav" title="Users and quotas" aria-label="Users and quotas" onClick={() => setUsersManager(true)}><Icon name="folder" /><span className="nav-label">Users and quotas</span></button>}
+          <button type="button" className="nav" title="Activity history" aria-label="Activity history" onClick={() => setActivityManager(true)}><Icon name="clock" /><span className="nav-label">Activity history</span></button>
+          {(currentUser === "admin" || currentUser === null) && <button type="button" className="nav" title="Host folders" aria-label="Host folders" onClick={() => setMountManager(true)}><Icon name="folder" /><span className="nav-label">Host folders</span></button>}
+          <button type="button" className="nav" title="Storage" aria-label="Storage" onClick={() => setStorageManager(true)}><Icon name="folder" /><span className="nav-label">Storage</span></button>
+          <button type="button" className="nav" title="Transfers" onClick={() => setTransferManager(true)}><Icon name="upload" /><span className="nav-label">Transfers</span></button>
         </nav>
 
         <input
@@ -789,8 +808,8 @@ export function App() {
               {chosen.length > 0 && view.kind !== "trash" && !file && (
                 <div className="bulk-bar">
                   <span>{chosen.length} selected</span>
-                  <button className="btn" type="button" onClick={bulkDownload} disabled={!chosen.some((n) => n.kind === "file")}>
-                    Download files
+                  <button className="btn" type="button" onClick={bulkDownload}>
+                    Download ZIP
                   </button>
                   <button className="btn" type="button" onClick={bulkMove}>Move selected</button>
                   <button className="btn danger" type="button" onClick={bulkTrash}>Move to trash</button>
@@ -822,7 +841,7 @@ export function App() {
                   move={move}
                   copy={copy}
                   share={(n) => setShareTarget(n)}
-                  download={(n) => run(() => api.download(n.path))}
+                  download={(n) => run(() => n.kind === "folder" ? api.downloadArchive([n.id]) : api.download(n.path))}
                   trash={(n) => trash(n)}
                   restore={restore}
                   purge={purge}
@@ -842,8 +861,13 @@ export function App() {
         </main>
       </div>
 
+      {usersManager && <UsersPanel close={() => setUsersManager(false)} />}
+      {activityManager && <ActivityPanel close={() => setActivityManager(false)} />}
+      {mountManager && <MountsPanel close={() => { setMountManager(false); void refresh(); }} />}
+      {storageManager && <StoragePanel close={() => setStorageManager(false)} />}
+      {transferManager && <TransfersPanel close={() => setTransferManager(false)} />}
       {shareTarget && (
-        <ShareLinksDialog node={shareTarget} close={() => setShareTarget(null)} notify={notify} />
+        shareTarget.kind === "folder" ? <UploadLinksDialog node={shareTarget} close={() => setShareTarget(null)} /> : <ShareLinksDialog node={shareTarget} close={() => setShareTarget(null)} notify={notify} />
       )}
       {dialog && (
         <DialogBox
@@ -1037,6 +1061,8 @@ function FileTable(props: {
                             <button role="menuitem" onClick={pick(props.move, n)}>
                               <Icon name="move" size={18} /> Move
                             </button>
+                            {n.kind === "folder" && <button role="menuitem" onClick={pick(props.share, n)}><Icon name="upload" size={18} /> Create upload-only link</button>}
+                            {n.kind === "folder" && <button role="menuitem" onClick={pick(props.download, n)}><Icon name="download" size={18} /> Download folder as ZIP</button>}
                             {n.kind === "file" && (
                               <>
                                 <button role="menuitem" onClick={pick(props.copy, n)}>
@@ -1493,6 +1519,8 @@ function ShareLinksDialog({
   close: () => void;
   notify: (message: string, tone?: "ok" | "error") => void;
 }) {
+  const [downloadLimit, setDownloadLimit] = useState("");
+  const [pinRevision, setPinRevision] = useState(false);
   const [links, setLinks] = useState<DownloadLink[]>([]);
   const [newUrl, setNewUrl] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1520,8 +1548,8 @@ function ShareLinksDialog({
   };
 
   const create = () => perform(async () => {
-    const link = await api.createLink(node.id);
-    setNewUrl(`${window.location.origin}/s/${link.token}`);
+    const link = await api.createLink(node.id, 7, pinRevision ? node.head_revision ?? undefined : undefined, downloadLimit ? Number(downloadLimit) : undefined);
+    setNewUrl(`${window.location.origin}${link.url_path}`);
     setLinks(await api.links(node.id));
     notify("Link created. Copy it now; Drawer will not display this secret again.");
   });
@@ -1548,8 +1576,10 @@ function ShareLinksDialog({
         <h3 id="share-title">Share “{node.name}”</h3>
         <p className="muted small">
           Anyone with the link can download this file for 7 days without your Drawer access token.
-          Links always serve the latest version. Revoke a link to disable it immediately.
+          Choose whether the link follows the latest version or stays on the current revision. Revoke it to disable access.
         </p>
+        <label>Download limit (blank for unlimited)<input type="number" min="1" max="1000000" value={downloadLimit} onChange={(e) => setDownloadLimit(e.target.value)} /></label>
+        <label><span><input type="checkbox" checked={pinRevision} onChange={(e) => setPinRevision(e.target.checked)} /> Keep this link on revision {node.head_revision}</span></label>
         <div className="modal-actions">
           <button type="button" className="btn primary" disabled={busy || loading} onClick={create}>
             Create 7-day link
@@ -1570,7 +1600,7 @@ function ShareLinksDialog({
             {links.map((link) => (
               <li key={link.id}>
                 <span className="muted small">
-                  {new Date(link.expires_at).getTime() < Date.now() ? "Expired" : "Expires"}: {new Date(link.expires_at).toLocaleString()}
+                  {link.max_downloads ? `${Math.max(0, link.max_downloads - link.downloads)} downloads left · ` : ""}{link.revision ? `Revision ${link.revision} · ` : "Latest version · "}{new Date(link.expires_at).getTime() < Date.now() ? "Expired" : "Expires"}: {new Date(link.expires_at).toLocaleString()}
                 </span>
                 <button type="button" className="btn danger" disabled={busy} onClick={() => revoke(link.id)}>Revoke</button>
               </li>
@@ -1585,6 +1615,7 @@ function ShareLinksDialog({
 
 function DialogBox({ dialog, close, notify }: { dialog: Dialog; close: () => void; notify: (t: string, tone?: "ok" | "error") => void }) {
   const [value, setValue] = useState(dialog.kind === "prompt" ? dialog.initial : "");
+  const [username, setUsername] = useState("admin");
   const [busy, setBusy] = useState(false);
   const input = useRef<HTMLInputElement>(null);
 
@@ -1607,7 +1638,7 @@ function DialogBox({ dialog, close, notify }: { dialog: Dialog; close: () => voi
     if (dialog.kind === "prompt" && !value.trim()) return;
     setBusy(true);
     try {
-      if (dialog.kind === "prompt") await dialog.submit(value.trim());
+      if (dialog.kind === "prompt") await dialog.submit(dialog.secret ? value : value.trim(), username);
       else await dialog.submit();
       close();
     } catch (e) {
@@ -1630,6 +1661,7 @@ function DialogBox({ dialog, close, notify }: { dialog: Dialog; close: () => voi
         }}
       >
         <h3 id="dialog-title">{dialog.title}</h3>
+        {dialog.kind === "prompt" && dialog.username && <label>Username<input aria-label="Username" autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} /></label>}
         {dialog.kind === "prompt" ? (
           <label>
             <span className="muted small">{dialog.label}</span>
