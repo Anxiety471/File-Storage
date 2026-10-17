@@ -51,6 +51,8 @@ pub enum Cmd {
     Stdio,
     /// Install or manage the Linux user background service.
     Service { #[command(subcommand)] action: crate::background::ServiceAction },
+    /// Create, verify, restore and schedule offline snapshots.
+    Backup { #[command(subcommand)] action: crate::backup::BackupAction },
     /// Register and manage read-only host folder mounts.
     Mount { #[command(subcommand)] action: crate::mounts::MountAction },
     /// List a folder. Folders are shown with a trailing slash.
@@ -306,6 +308,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
         None => default_data_dir()?,
     };
     if let Cmd::Service { action } = &cmd { return crate::background::run(action, &data_dir); }
+    if let Cmd::Backup { action } = &cmd { return crate::backup::cli(action, &data_dir).await; }
     if let Cmd::McpConfig { format, url, name } = &cmd {
         print!("{}", mcp_config(*format, &data_dir, url.as_deref(), name)?);
         return Ok(());
@@ -582,7 +585,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
             if json { emit_json(&grants) } else { println!("removed {principal} from {}", node.path); Ok(()) }
         }
         Cmd::Doctor => doctor(&svc, &data_dir, json).await,
-        Cmd::Service { .. } | Cmd::McpConfig { .. } | Cmd::Completions { .. } | Cmd::Update { .. } => {
+        Cmd::Backup { .. } | Cmd::Service { .. } | Cmd::McpConfig { .. } | Cmd::Completions { .. } | Cmd::Update { .. } => {
             unreachable!("handled before the store is opened")
         }
     }

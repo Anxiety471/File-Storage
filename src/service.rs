@@ -38,6 +38,7 @@ pub type Properties = std::collections::BTreeMap<String, String>;
 pub struct Drawer {
     pub(crate) pool: SqlitePool,
     pub(crate) data_dir: std::path::PathBuf,
+    _store_lease: Arc<std::fs::File>,
     blobs: BlobStore,
     pub(crate) transfer_dir: std::path::PathBuf,
     pub(crate) transfer_lock: Arc<Mutex<()>>,
@@ -523,8 +524,16 @@ async fn migrate_legacy(pool: &SqlitePool) -> Result<()> {
 
 impl Drawer {
     /// Open (or create) a store rooted at `data_dir`: `drawer.db` plus `blobs/`.
-    pub async fn open(data_dir: &Path) -> Result<Self> {
+    pub async fn open(data_dir: &Path) -> Result<Self> { Self::open_leased(data_dir, false).await }
+
+    /// Offline maintenance excludes all current Drawer processes using this store.
+    pub async fn open_maintenance(data_dir: &Path) -> Result<Self> { Self::open_leased(data_dir, true).await }
+
+    async fn open_leased(data_dir: &Path, exclusive: bool) -> Result<Self> {
         tokio::fs::create_dir_all(data_dir).await?;
+        let lease = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(data_dir.join(".maintenance.lock"))?;
+        let locked = if exclusive { fs2::FileExt::try_lock_exclusive(&lease) } else { fs2::FileExt::try_lock_shared(&lease) };
+        locked.map_err(|_| Error::Conflict("store is in use; stop Drawer before offline maintenance".into()))?;
         let opts = SqliteConnectOptions::new()
             .filename(data_dir.join("drawer.db"))
             .create_if_missing(true)
@@ -546,6 +555,7 @@ impl Drawer {
         Ok(Self {
             pool,
             data_dir: data_dir.to_owned(),
+            _store_lease: Arc::new(lease),
             blobs: BlobStore::new(data_dir.join("blobs")),
             transfer_dir: data_dir.join("transfers"),
             transfer_lock: Arc::new(Mutex::new(())),

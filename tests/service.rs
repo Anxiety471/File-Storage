@@ -540,3 +540,22 @@ async fn one_download_link_admits_only_one_concurrent_request() {
     assert_eq!(listed[0].downloads, 1);
     assert!(s.create_download_link_with_options(&file.node.id, "alice", 7, None, Some(0)).await.is_err());
 }
+
+#[tokio::test]
+async fn verified_backup_restore_and_exclusive_maintenance() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("store");
+    let s = Drawer::open(&data).await.unwrap();
+    s.write("/backup.txt", b"snapshot", WriteOpts::new("api", "")).await.unwrap();
+    assert!(Drawer::open_maintenance(&data).await.is_err());
+    drop(s);
+    let snapshot = drawer::backup::create(&data, &dir.path().join("backups")).await.unwrap();
+    drawer::backup::verify(&snapshot).await.unwrap();
+    let restored = dir.path().join("restored");
+    drawer::backup::restore(&snapshot, &restored).await.unwrap();
+    let restored_s = Drawer::open(&restored).await.unwrap();
+    assert_eq!(restored_s.read(Ref::Path("/backup.txt"), None).await.unwrap().1, b"snapshot");
+    assert!(drawer::backup::restore(&snapshot, &restored).await.is_err());
+    std::fs::write(snapshot.join("drawer.db"), b"corrupt").unwrap();
+    assert!(drawer::backup::verify(&snapshot).await.is_err());
+}

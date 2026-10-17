@@ -319,3 +319,29 @@ MCP entries describe transport requests, not individual tool calls. HTTP success
 means a response was issued, not that a browser completed its download. CLI writes
 are not included. Events are retained until the operator prunes the database;
 this local history is best-effort and is not a tamper-proof compliance log.
+
+### Verified snapshots and backup schedules
+
+Stop Drawer before offline snapshots. Current Drawer processes hold a shared
+store lease; maintenance takes an exclusive lease and refuses an active store.
+Stop older binaries too, since they do not know about this lease.
+
+```sh
+drawer backup create --directory /other-disk/drawer-backups
+drawer backup list --directory /other-disk/drawer-backups
+drawer backup verify /other-disk/drawer-backups/drawer-UUID
+drawer backup restore /other-disk/drawer-backups/drawer-UUID --to /new/store
+# Linux systemd user service; briefly stops/restarts drawer.service on each run:
+drawer backup schedule --directory /other-disk/drawer-backups --calendar daily
+drawer backup unschedule
+```
+
+Snapshots contain a compact SQLite database, every referenced revision blob, and
+a SHA-256 manifest. Creation verifies every file, SQLite integrity/foreign keys,
+file head references and revision blob hashes before publishing the directory.
+Restore only accepts a destination that does not exist. Interrupted restores leave
+that new directory for inspection. Original stores and snapshots are preserved.
+Host mount registrations are backed up; their external contents are not. Staged
+uploads are excluded and must be re-uploaded after a restore. Keep snapshots on a
+separate device and protect them like the original store. No retention deletion
+is automatic. `--no-start` writes schedule units for inspection without systemd.

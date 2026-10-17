@@ -14,7 +14,7 @@ pub enum ServiceAction {
     Uninstall,
 }
 
-fn quote(path: &Path) -> Result<String> {
+pub(crate) fn quote(path: &Path) -> Result<String> {
     let text = path.to_str().context("systemd paths must be UTF-8")?;
     if text.chars().any(|c| c.is_control()) { bail!("control characters are not allowed in service paths"); }
     Ok(format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%").replace('$', "$$")))
