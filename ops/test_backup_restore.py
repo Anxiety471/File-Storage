@@ -70,6 +70,29 @@ sys.exit(0)
         calls = (self.root / 'calls').read_text().splitlines()
         self.assertEqual(calls[-4:], ['compose stop drawer', 'compose run --rm', 'compose run --rm', 'compose up -d'])
 
+    def test_store_lease_is_excluded_from_new_backups(self):
+        import tarfile
+        (self.root / 'data/.maintenance.lock').write_text('live lease')
+        archive = self.backup()
+        with tarfile.open(archive) as backup:
+            self.assertNotIn('./.maintenance.lock', backup.getnames())
+        result = self.run_script('restore.sh', archive, input='RESTORE\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / 'data/.maintenance.lock').read_text(), 'live lease')
+
+    def test_legacy_snapshot_lease_does_not_leave_restore_stage(self):
+        import tarfile
+        archive = self.root / 'backups/legacy.tar.gz'
+        (self.root / 'data/.maintenance.lock').write_text('old copied lease')
+        with tarfile.open(archive, 'w:gz') as backup:
+            backup.add(self.root / 'data', arcname='.')
+        Path(str(archive) + '.sha256').write_text(hashlib.sha256(archive.read_bytes()).hexdigest())
+        (self.root / 'data/.maintenance.lock').write_text('live lease')
+        result = self.run_script('restore.sh', archive, input='RESTORE\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(list((self.root / 'data').glob('.restore-stage-*')))
+        self.assertEqual((self.root / 'data/.maintenance.lock').read_text(), 'live lease')
+
     def test_checksum_must_match_selected_archive(self):
         archive = self.backup()
         archive.write_bytes(b'corrupt')
