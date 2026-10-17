@@ -32,6 +32,8 @@ The installer downloads the release for your machine, checks its SHA-256, and pu
 
 To update an install, run `drawer update`. It fetches the latest release for your machine, checks its SHA-256 against `SHA256SUMS`, and replaces the binary and the UI in place. `drawer update --check` only reports whether a newer release exists. Restart `drawer serve` afterwards to run the new version. The store is never touched. The web UI shows an **Update to vX** button in the top bar when a newer release exists; it asks first, then runs the same update.
 
+To remove Drawer, run `drawer uninstall`. It stops and removes the background service if you installed one, then deletes the web UI and the binary. Your data in `~/.drawer` is left alone.
+
 Drawer runs on its own; Hermes or another agent harness is optional. By default,
 all store commands use `~/.drawer`, regardless of your current working directory:
 
