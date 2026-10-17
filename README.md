@@ -278,3 +278,5 @@ Put `DRAWER_ADMIN_PASSWORD` and `DRAWER_TOKEN` in `~/.config/drawer/env` (create
 Browser uploads compute SHA-256 incrementally in a worker before sending chunks, pass the expected hash to the server and compare it with the committed revision. Resume IDs include the content hash, so selecting a different same-sized file cannot splice two files together. Hashing is bounded to 4 MiB chunks and works on private HTTP as well as HTTPS.
 
 Public links can be fixed to a specific revision: select **Keep this link on revision N** in the share dialog, or provide `revision` when creating a link over REST. Later edits do not change that link's contents. Default links continue following the latest head. Trash, expiry and revocation apply to both modes.
+
+Share links optionally accept a download limit (1–1,000,000) from the dialog or `max_downloads` in REST. A request consumes a use when an authorized download is issued, even if the recipient cancels the stream. Exhausted links return 404. Concurrent requests reserve uses atomically; blank means unlimited.
