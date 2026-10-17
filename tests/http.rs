@@ -722,3 +722,15 @@ async fn storage_distinguishes_deduplication_history_and_staging() {
     assert_eq!(stats["unreferenced_blob_bytes"], 0);
     assert!(stats["filesystem_available_bytes"].as_u64().unwrap() > 0);
 }
+
+#[tokio::test]
+async fn archive_rejects_names_that_windows_extractors_treat_as_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Drawer::open(dir.path()).await.unwrap();
+    for path in ["/..\\escape.txt", "/C:drive.txt", "/.. /escape.txt"] {
+        let file = s.write(path, b"safe contents", drawer::service::WriteOpts::new("api", "")).await.unwrap();
+        let app = drawer::app(s.clone(), None, None);
+        let response = send(&app, get(&format!("/drawer/v1/archive?ids={}", file.node.id))).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+    }
+}
