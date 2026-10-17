@@ -42,6 +42,7 @@ pub struct Drawer {
     blobs: BlobStore,
     pub(crate) transfer_dir: std::path::PathBuf,
     pub(crate) transfer_lock: Arc<Mutex<()>>,
+    pub(crate) deposit_lock: Arc<Mutex<()>>,
     // Makes each check-then-write sequence one atomic step. Fine for the single-process server
     // this crate is; several processes sharing a store would need `BEGIN IMMEDIATE`.
     pub(crate) write_lock: Arc<Mutex<()>>,
@@ -143,6 +144,8 @@ pub struct WriteOpts {
     /// `Some(0)`: only create when there is no live file here.
     /// `Some(n)`: only change the file while its head revision is `n`.
     pub if_head_revision: Option<i64>,
+    /// Require the destination parent to retain this identity at commit time.
+    pub required_parent: Option<String>,
 }
 
 impl WriteOpts {
@@ -559,6 +562,7 @@ impl Drawer {
             blobs: BlobStore::new(data_dir.join("blobs")),
             transfer_dir: data_dir.join("transfers"),
             transfer_lock: Arc::new(Mutex::new(())),
+            deposit_lock: Arc::new(Mutex::new(())),
             write_lock: Arc::new(Mutex::new(())),
         })
     }
@@ -1047,6 +1051,10 @@ impl Drawer {
         opts: &WriteOpts,
     ) -> Result<WriteOutcome> {
         let _guard = self.write_lock.lock().await;
+        if let Some(parent) = &opts.required_parent {
+            let path = norm.rsplit_once('/').map(|(p,_)| if p.is_empty() { "/" } else { p }).unwrap_or("/");
+            if self.stat(Ref::Path(path)).await?.id != *parent { return Err(Error::PreconditionFailed("destination folder changed".into())); }
+        }
         let slot = self.slot(norm).await?;
 
         // Who we check, and what the precondition sees as the live head.

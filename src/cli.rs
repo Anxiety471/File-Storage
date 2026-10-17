@@ -784,7 +784,7 @@ async fn target_path(svc: &Drawer, dest: &str, name: &str) -> Result<String> {
 
 fn write_opts(actor: &str, comment: &str, props: Vec<(String, String)>, if_head_revision: Option<i64>) -> WriteOpts {
     let properties: Properties = props.into_iter().collect();
-    WriteOpts { author: actor.into(), comment: comment.into(), properties, if_head_revision }
+    WriteOpts { author: actor.into(), comment: comment.into(), properties, if_head_revision, required_parent: None }
 }
 
 fn report_write(out: &WriteOutcome, json: bool) -> Result<()> {

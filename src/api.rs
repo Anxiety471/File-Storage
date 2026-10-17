@@ -194,6 +194,8 @@ pub fn router() -> Router<Drawer> {
         .route("/copy", post(copy))
         .route("/move", post(move_to))
         .route("/nodes/{id}", axum::routing::patch(update_node).delete(purge_node))
+        .route("/nodes/{id}/upload-links", get(crate::deposits::list).post(crate::deposits::create))
+        .route("/nodes/{id}/upload-links/{link}", axum::routing::delete(crate::deposits::revoke))
         .route("/nodes/{id}/links", get(list_links).post(create_link))
         .route("/nodes/{id}/links/{link_id}", axum::routing::delete(revoke_link))
         .route("/nodes/{id}/permissions", get(list_permissions).put(share))
@@ -253,6 +255,7 @@ fn write_opts(h: &HeaderMap, if_head_revision: Option<i64>) -> Result<WriteOpts>
         comment: header_str(h, "x-drawer-comment", ""),
         properties,
         if_head_revision,
+        required_parent: None,
     })
 }
 

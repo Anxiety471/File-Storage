@@ -16,8 +16,8 @@ pub async fn record(State(s): State<Drawer>, req: Request, next: Next) -> Respon
     // MatchedPath stores route templates, never the secret in /s/{token}.
     let route = req.extensions().get::<MatchedPath>().map(|p| p.as_str().to_owned()).unwrap_or_else(|| "unmatched".into());
     let relevant_method = method != "GET" || req.uri().path().ends_with("/files") || req.uri().path().ends_with("/archive") || req.uri().path().starts_with("/s/");
-    let tracked = relevant_method && ((req.uri().path().starts_with("/drawer/v1") && !req.uri().path().starts_with("/drawer/v1/activity")) || req.uri().path() == "/auth/login" || req.uri().path().starts_with("/s/") || req.uri().path() == "/mcp");
-    let actor = if req.uri().path() == "/auth/login" || req.uri().path().starts_with("/s/") { "anonymous".to_owned() } else { req.headers().get("x-drawer-author").and_then(|v| v.to_str().ok()).unwrap_or("api").chars().take(100).collect() };
+    let tracked = relevant_method && ((req.uri().path().starts_with("/drawer/v1") && !req.uri().path().starts_with("/drawer/v1/activity")) || req.uri().path() == "/auth/login" || req.uri().path().starts_with("/s/") || req.uri().path() == "/mcp" || req.uri().path().starts_with("/drop/"));
+    let actor = if req.uri().path() == "/auth/login" || req.uri().path().starts_with("/s/") || req.uri().path().starts_with("/drop/") { "anonymous".to_owned() } else { req.headers().get("x-drawer-author").and_then(|v| v.to_str().ok()).unwrap_or("api").chars().take(100).collect() };
     let response = next.run(req).await;
     if tracked && let Err(error) = sqlx::query("INSERT INTO activity(actor,method,route,status,created_at) VALUES(?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))").bind(actor).bind(method).bind(route).bind(i64::from(response.status().as_u16())).execute(&s.pool).await {
             tracing::warn!(%error, "could not persist activity event");

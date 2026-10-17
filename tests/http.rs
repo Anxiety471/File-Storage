@@ -777,3 +777,26 @@ async fn activity_records_login_failures_changes_and_redacts_secrets() {
     let all = format!("{events}{earlier}");
     for secret in ["machine-secret", "wrong-secret", "body-secret", &link_secret] { assert!(!all.contains(secret)); }
 }
+
+#[tokio::test]
+async fn upload_only_capability_enforces_budget_revocation_and_no_read_access() {
+    let dir=tempfile::tempdir().unwrap();
+    let s=Drawer::open(dir.path()).await.unwrap();
+    let folder=s.mkdir("/inbox","api").await.unwrap();
+    let app=drawer::app(s.clone(),Some("secret".into()),None);
+    let create=Request::post(format!("/drawer/v1/nodes/{}/upload-links",folder.id)).header("authorization","Bearer secret").header("content-type","application/json").body(Body::from(r#"{"days":7,"max_files":1,"max_bytes":3}"#)).unwrap();
+    let link=json_of(send(&app,create).await).await;
+    let token=link["token"].as_str().unwrap();
+    let path=format!("/drop/{token}");
+    assert_eq!(send(&app,get(&path)).await.status(),StatusCode::OK);
+    let upload=||Request::post(format!("{path}?name=hello.txt")).header("content-length","3").body(Body::from("abc")).unwrap();
+    assert_eq!(send(&app,upload()).await.status(),StatusCode::OK);
+    assert_eq!(send(&app,upload()).await.status(),StatusCode::CONFLICT);
+    assert_eq!(send(&app,get(&format!("/drawer/v1/tree?path=/inbox&token={token}"))).await.status(),StatusCode::UNAUTHORIZED);
+    assert_eq!(send(&app,get(&format!("/s/{token}"))).await.status(),StatusCode::NOT_FOUND);
+    let nodes=s.list("/inbox").await.unwrap(); assert_eq!(nodes.len(),1); assert!(nodes[0].name.ends_with("hello.txt"));
+    assert_eq!(s.read(drawer::service::Ref::Id(&nodes[0].id),None).await.unwrap().1,b"abc");
+    let revoke=Request::delete(format!("/drawer/v1/nodes/{}/upload-links/{}",folder.id,link["id"].as_str().unwrap())).header("authorization","Bearer secret").body(Body::empty()).unwrap();
+    assert_eq!(send(&app,revoke).await.status(),StatusCode::OK);
+    assert_eq!(send(&app,get(&path)).await.status(),StatusCode::NOT_FOUND);
+}

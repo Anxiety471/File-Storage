@@ -6,6 +6,7 @@ pub mod mounts;
 pub mod activity;
 pub mod backup;
 pub mod cleanup;
+pub mod deposits;
 pub mod auth;
 pub mod blob;
 pub mod cli;
@@ -61,6 +62,7 @@ pub fn app_with_auth(
     // Top level, ahead of the UI fallback, so `/health` is never answered with index.html.
     let mut app = Router::new()
         .route("/health", axum::routing::get(api::health))
+        .route("/drop/{token}", axum::routing::get(deposits::landing).post(deposits::upload).with_state(svc.clone()).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)))
         .route("/s/{token}", axum::routing::get(api::download_shared).with_state(svc.clone()))
         .nest("/drawer/v1", api::router().with_state(svc).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)))
         .nest_service("/mcp", mcp)
@@ -124,7 +126,9 @@ async fn check_token(token: &str, req: Request, next: Next) -> Response {
         && req.uri().path().strip_prefix("/s/").is_some_and(|token| {
             token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit())
         });
-    if public_link {
+    let public_drop = matches!(*req.method(), axum::http::Method::GET | axum::http::Method::POST)
+        && req.uri().path().strip_prefix("/drop/").is_some_and(|token| token.len()==64 && token.bytes().all(|b| b.is_ascii_hexdigit()));
+    if public_link || public_drop {
         return next.run(req).await;
     }
     let ok = req

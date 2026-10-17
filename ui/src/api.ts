@@ -153,7 +153,12 @@ export interface HostEntry { name: string; path: string; kind: "folder" | "file"
 
 export interface ActivityEvent { id: number; actor: string; method: string; route: string; status: number; created_at: string }
 
+export interface UploadLink { id: string; expires_at: string; max_files: number; max_bytes: number; files_uploaded: number; bytes_uploaded: number }
+
 export const api = {
+  async uploadLinks(id: string): Promise<UploadLink[]> { return (await check(await fetch(`${BASE}/nodes/${id}/upload-links`, { headers: headers() }))).json(); },
+  async createUploadLink(id: string, days: number, max_files: number, max_bytes: number): Promise<{ token: string }> { return (await check(await fetch(`${BASE}/nodes/${id}/upload-links`, json("POST", { days, max_files, max_bytes })))).json(); },
+  async revokeUploadLink(id: string, link: string): Promise<void> { await check(await fetch(`${BASE}/nodes/${id}/upload-links/${link}`, { method: "DELETE", headers: headers() })); },
   async activity(before?: number): Promise<ActivityEvent[]> { return (await check(await fetch(`${BASE}/activity${before ? `?before=${before}` : ""}`, { headers: headers() }))).json(); },
   async mounts(): Promise<HostMount[]> { return (await check(await fetch(`${BASE}/mounts`, { headers: headers() }))).json(); },
   async hostEntries(id: string, path: string): Promise<HostEntry[]> { return (await check(await fetch(`${BASE}/mounts/${encodeURIComponent(id)}/entries?path=${encodeURIComponent(path)}`, { headers: headers() }))).json(); },

@@ -102,3 +102,10 @@ CREATE TABLE IF NOT EXISTS activity (
     method TEXT NOT NULL, route TEXT NOT NULL, status INTEGER NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS upload_links (
+    id TEXT PRIMARY KEY, node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL,
+    max_files INTEGER NOT NULL, max_bytes INTEGER NOT NULL,
+    files_uploaded INTEGER NOT NULL DEFAULT 0, bytes_uploaded INTEGER NOT NULL DEFAULT 0
+);

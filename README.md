@@ -363,3 +363,16 @@ uses references remaining after that policy, so shared/deduplicated content is
 preserved. Only valid SHA-256 blob filenames older than the grace period qualify.
 Metadata commits before unlinks; interrupted removal can leave extra orphans for
 the next run. Recent orphans, temporary files and staged uploads are not deleted.
+
+### Upload-only folder links
+
+Use a folder's menu → **Create upload-only link**. Set expiry (up to 30 days),
+file count and total byte budget, then copy the one-time-displayed URL. Recipients
+get a standalone upload page; they cannot list, read or overwrite Drawer files.
+Names receive random prefixes. Revoke links from the same dialog. Individual files
+are limited to 512 MiB and requests to 15 minutes. Uploads require Content-Length,
+reserve budget atomically before streaming, and stage to disk with bounded memory.
+Failed uploads refund reservations; a crash or disconnected handler can leave a
+reservation consumed, so create a replacement link if necessary. Revocation or
+folder changes are rechecked at commit. Only token hashes are stored. Treat these
+capability links as secrets; file contents are not scanned for malware.

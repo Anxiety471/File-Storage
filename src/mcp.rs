@@ -454,6 +454,7 @@ impl DrawerMcp {
             comment: a.comment.unwrap_or_default(),
             properties: a.properties.unwrap_or_default(),
             if_head_revision: a.if_head_revision,
+            required_parent: None,
         };
         let data = if base64_wanted(&a.encoding)? {
             BASE64.decode(a.content.trim()).map_err(|e| format!("content is not valid base64: {e}"))?

@@ -1,3 +1,4 @@
+import { UploadLinksDialog } from "./UploadLinksDialog";
 import { ActivityPanel } from "./ActivityPanel";
 import { MountsPanel } from "./MountsPanel";
 import { StoragePanel } from "./StoragePanel";
@@ -856,7 +857,7 @@ export function App() {
       {storageManager && <StoragePanel close={() => setStorageManager(false)} />}
       {transferManager && <TransfersPanel close={() => setTransferManager(false)} />}
       {shareTarget && (
-        <ShareLinksDialog node={shareTarget} close={() => setShareTarget(null)} notify={notify} />
+        shareTarget.kind === "folder" ? <UploadLinksDialog node={shareTarget} close={() => setShareTarget(null)} /> : <ShareLinksDialog node={shareTarget} close={() => setShareTarget(null)} notify={notify} />
       )}
       {dialog && (
         <DialogBox
@@ -1050,6 +1051,7 @@ function FileTable(props: {
                             <button role="menuitem" onClick={pick(props.move, n)}>
                               <Icon name="move" size={18} /> Move
                             </button>
+                            {n.kind === "folder" && <button role="menuitem" onClick={pick(props.share, n)}><Icon name="upload" size={18} /> Create upload-only link</button>}
                             {n.kind === "folder" && <button role="menuitem" onClick={pick(props.download, n)}><Icon name="download" size={18} /> Download folder as ZIP</button>}
                             {n.kind === "file" && (
                               <>
