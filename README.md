@@ -26,6 +26,8 @@ curl -fsSL https://raw.githubusercontent.com/Anxiety471/drawer/main/install.sh |
 drawer serve                                # http://127.0.0.1:8787
 ```
 
+Install and update take seconds because they download a prebuilt release. Releases are published automatically: bumping `version` in `Cargo.toml` on `main` builds the archives and creates `vX.Y.Z` (pushing a `v*` tag also works). Until a release exists the installer builds from source, which takes minutes, and `drawer update` has nothing to fetch.
+
 The installer downloads the release for your machine, checks its SHA-256, and puts `drawer` in `~/.local/bin` with the UI in `~/.local/share/drawer/ui`. If no release exists for your platform it builds from source with cargo (installing Rust via rustup if needed).
 
 To update an install, run `drawer update`. It fetches the latest release for your machine, checks its SHA-256 against `SHA256SUMS`, and replaces the binary and the UI in place. `drawer update --check` only reports whether a newer release exists. Restart `drawer serve` afterwards to run the new version. The store is never touched. The web UI shows an **Update to vX** button in the top bar when a newer release exists; it asks first, then runs the same update.

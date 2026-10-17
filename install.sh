@@ -9,6 +9,7 @@
 #   DRAWER_VERSION  release tag to install, default latest
 #   DRAWER_REF      branch used for the source fallback, default main
 #   DRAWER_REPO     GitHub owner/repo, default Anxiety471/drawer
+#   DRAWER_GITHUB_URL  release host, default https://github.com (for mirrors and testing)
 #   DRAWER_SOURCE=1 skip the release download and build from source
 set -eu
 
@@ -16,6 +17,11 @@ REPO="${DRAWER_REPO:-Anxiety471/drawer}"
 VERSION="${DRAWER_VERSION:-latest}"
 REF="${DRAWER_REF:-main}"
 PREFIX="${DRAWER_PREFIX:-$HOME/.local}"
+GITHUB_URL="${DRAWER_GITHUB_URL:-https://github.com}"
+case "$GITHUB_URL" in
+  https://*) PROTO="=https" ;;
+  *) PROTO="=http,https" ;; # only reachable through the DRAWER_GITHUB_URL override
+esac
 
 say() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -60,14 +66,14 @@ install_tree() {
 install_release() {
   target=$1
   if [ "$VERSION" = latest ]; then
-    base="https://github.com/$REPO/releases/latest/download"
+    base="$GITHUB_URL/$REPO/releases/latest/download"
   else
-    base="https://github.com/$REPO/releases/download/$VERSION"
+    base="$GITHUB_URL/$REPO/releases/download/$VERSION"
   fi
   archive="drawer-$target.tar.gz"
   say "downloading $archive ($VERSION)"
-  curl --proto '=https' --tlsv1.2 -fsSL "$base/$archive" -o "$tmp/$archive" || return 1
-  curl --proto '=https' --tlsv1.2 -fsSL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS" || return 1
+  curl --proto "$PROTO" --tlsv1.2 -fsSL "$base/$archive" -o "$tmp/$archive" || return 1
+  curl --proto "$PROTO" --tlsv1.2 -fsSL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS" || return 1
   grep " $archive\$" "$tmp/SHA256SUMS" > "$tmp/check" || die "$archive is not listed in SHA256SUMS"
   (cd "$tmp" && sha256_check check) || die "checksum mismatch for $archive"
   tar -xzf "$tmp/$archive" -C "$tmp"
@@ -111,7 +117,7 @@ main() {
     if install_release "$target"; then
       installed=release
     else
-      say "no release for $target yet, falling back to a source build"
+      say "no published release for $target, falling back to a source build (slow: several minutes)"
     fi
   fi
   if [ -z "$installed" ]; then
