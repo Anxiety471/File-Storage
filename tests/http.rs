@@ -871,3 +871,41 @@ async fn archive_rejects_names_that_windows_extractors_treat_as_paths() {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
     }
 }
+
+#[tokio::test]
+async fn batch_upload_starts_and_completes_many_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = drawer::app(Drawer::open(dir.path()).await.unwrap(), None, None);
+    let started = json_of(send(&app, json_post("/drawer/v1/transfers/batch", json!({"files":[
+        {"path":"/batch/a.txt","size":1},{"path":"/batch/b.txt","size":2}]}))).await).await;
+    let transfers = started["transfers"].as_array().unwrap();
+    assert_eq!(transfers.len(), 2);
+    for (t, body) in transfers.iter().zip(["a", "bb"]) {
+        let chunk = Request::put(format!("/drawer/v1/transfers/{}", t["id"].as_str().unwrap()))
+            .header("x-upload-offset", "0").body(Body::from(body)).unwrap();
+        assert_eq!(send(&app, chunk).await.status(), StatusCode::OK);
+    }
+    let ids: Vec<_> = transfers.iter().map(|t| t["id"].clone()).collect();
+    let done = json_of(send(&app, json_post("/drawer/v1/transfers/batch/complete", json!({"ids":ids}))).await).await;
+    assert!(done["results"].as_array().unwrap().iter().all(|r| r["ok"] == true));
+    assert_eq!(send(&app, get("/drawer/v1/files?path=/batch/b.txt")).await.into_body().collect().await.unwrap().to_bytes(), "bb");
+}
+
+#[tokio::test]
+async fn batch_upload_is_all_or_nothing_and_reports_partial_completion() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = drawer::app(Drawer::open(dir.path()).await.unwrap(), None, None);
+    let dup = json_post("/drawer/v1/transfers/batch", json!({"files":[{"path":"/x.txt","size":1},{"path":"/x.txt","size":1}]}));
+    assert_eq!(send(&app, dup).await.status(), StatusCode::BAD_REQUEST);
+    let bad = json_post("/drawer/v1/transfers/batch", json!({"files":[{"path":"/ok.txt","size":1},{"path":"/","size":1}]}));
+    assert_eq!(send(&app, bad).await.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(send(&app, json_post("/drawer/v1/transfers/batch", json!({"files":[]}))).await.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_of(send(&app, get("/drawer/v1/transfers")).await).await["transfers"].as_array().unwrap().len(), 0);
+    let ok = json_of(send(&app, json_post("/drawer/v1/transfers/batch", json!({"files":[{"path":"/p.txt","size":1},{"path":"/q.txt","size":1}]}))).await).await;
+    let ids: Vec<_> = ok["transfers"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap().to_string()).collect();
+    let chunk = Request::put(format!("/drawer/v1/transfers/{}", ids[0])).header("x-upload-offset", "0").body(Body::from("p")).unwrap();
+    assert_eq!(send(&app, chunk).await.status(), StatusCode::OK);
+    let done = json_of(send(&app, json_post("/drawer/v1/transfers/batch/complete", json!({"ids":ids}))).await).await;
+    assert_eq!(done["results"][0]["ok"], true);
+    assert_eq!(done["results"][1]["ok"], false);
+}

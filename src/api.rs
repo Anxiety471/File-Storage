@@ -188,6 +188,8 @@ pub fn router() -> Router<Drawer> {
         .route("/folders", post(mkdir).delete(delete_file))
         .route("/files", get(read_file).put(write_file).delete(delete_file))
         .route("/transfers", get(crate::transfers::list).post(crate::transfers::start))
+        .route("/transfers/batch", post(crate::transfers::start_batch))
+        .route("/transfers/batch/complete", post(crate::transfers::complete_batch))
         .route("/transfers/{id}", get(crate::transfers::status).patch(crate::transfers::change).put(crate::transfers::append).layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024)).delete(crate::transfers::cancel))
         .route("/transfers/{id}/complete", post(crate::transfers::complete))
         .route("/files/meta", get(meta))
