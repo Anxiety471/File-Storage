@@ -51,6 +51,8 @@ pub enum Cmd {
     Stdio,
     /// Install or manage the Linux user background service.
     Service { #[command(subcommand)] action: crate::background::ServiceAction },
+    /// Synchronize a local desktop folder with a remote Drawer workspace.
+    Sync(crate::sync::SyncArgs),
     /// Preview or apply offline retention and orphan-blob cleanup.
     Cleanup(crate::cleanup::CleanupArgs),
     /// Create, verify, restore and schedule offline snapshots.
@@ -303,6 +305,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
         clap_complete::generate(*shell, &mut command, "drawer", &mut std::io::stdout());
         return Ok(());
     }
+    if let Cmd::Sync(args) = &cmd { return crate::sync::run(args).await; }
     // Resolve only for commands that use a store. Help, completions and self-update
     // must also work in minimal environments without a home directory.
     let data_dir = match cli.data_dir {
@@ -588,7 +591,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
             if json { emit_json(&grants) } else { println!("removed {principal} from {}", node.path); Ok(()) }
         }
         Cmd::Doctor => doctor(&svc, &data_dir, json).await,
-        Cmd::Cleanup(_) | Cmd::Backup { .. } | Cmd::Service { .. } | Cmd::McpConfig { .. } | Cmd::Completions { .. } | Cmd::Update { .. } => {
+        Cmd::Sync(_) | Cmd::Cleanup(_) | Cmd::Backup { .. } | Cmd::Service { .. } | Cmd::McpConfig { .. } | Cmd::Completions { .. } | Cmd::Update { .. } => {
             unreachable!("handled before the store is opened")
         }
     }

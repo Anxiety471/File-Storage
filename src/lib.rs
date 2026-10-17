@@ -8,6 +8,7 @@ pub mod backup;
 pub mod cleanup;
 pub mod deposits;
 pub mod accounts;
+pub mod sync;
 pub mod auth;
 pub mod blob;
 pub mod cli;

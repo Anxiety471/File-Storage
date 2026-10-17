@@ -397,3 +397,37 @@ Root snapshots include existing user stores, with an exclusive lease on each.
 Cleanup targets only the selected store; operators may select a user's store with
 `--data-dir` when offline maintenance is needed. Back up the whole root before
 changing account data or cleaning private history.
+
+### Desktop folder sync
+
+```sh
+# Credentials stay in environment variables, never in sync state or command arguments.
+export DRAWER_TOKEN='your-machine-token'
+drawer sync ~/Documents/Drawer --url https://drawer.example.com --remote /Desktop
+# Keep synchronizing and retry offline failures every 30 seconds:
+drawer sync ~/Documents/Drawer --url https://drawer.example.com --remote /Desktop --watch
+# Named account: unset DRAWER_TOKEN; set DRAWER_SYNC_USERNAME and DRAWER_SYNC_PASSWORD.
+# For a server with authentication disabled, pass --anonymous explicitly.
+```
+
+Sync supports files up to 4 GiB, empty folders and up to 5000 entries per selected
+folder. It hashes local files incrementally, uses guarded resumable uploads, pins
+downloads to immutable revisions, and verifies downloaded SHA-256 hashes before
+installing them. Pending upload IDs and offsets survive restarts. Offline errors
+preserve local files and state; `--watch` retries until interrupted.
+
+When both sides change, the remote revision becomes the main local file and the
+local version is preserved as `.conflict-UUID`, then uploaded on the next pass.
+Previous local inodes from downloads are kept in `.drawer-sync/previous` for
+recovery, including late writes from editors with open handles. Remove old recovery
+copies manually when no longer needed. `.drawer-sync` contains durable state,
+uses an exclusive local lock, and is never uploaded. Symlinks are skipped; portable
+relative paths and capability-based access keep downloads inside the local root.
+
+Deletion and rename propagation are deliberately absent: a surviving copy restores
+its missing peer, and a rename can produce a second copy. This is a conservative
+content sync, not a filesystem mirror or native desktop GUI. Choose a different
+local directory for each server/account/remote folder; the durable binding rejects
+accidental reuse. Download retries restart that file; uploads resume from the
+server's committed offset. Servers must remain at the configured URL (redirects
+are rejected so credentials are not forwarded to another origin).
