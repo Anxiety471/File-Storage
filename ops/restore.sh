@@ -46,10 +46,10 @@ docker compose run --rm --no-deps --user root --entrypoint sh drawer -c '
   test -d "/data/$stage/blobs"
   chown -R drawer:drawer "/data/$stage"
   mkdir "/data/$snapshot"
-  for entry in drawer.db drawer.db-wal drawer.db-shm blobs transfers; do
+  for entry in drawer.db drawer.db-wal drawer.db-shm blobs transfers users; do
     if [ -e "/data/$entry" ]; then mv "/data/$entry" "/data/$snapshot/"; fi
   done
-  for entry in drawer.db drawer.db-wal drawer.db-shm blobs transfers; do
+  for entry in drawer.db drawer.db-wal drawer.db-shm blobs transfers users; do
     if [ -e "/data/$stage/$entry" ]; then mv "/data/$stage/$entry" /data/; fi
   done
   rmdir "/data/$stage"

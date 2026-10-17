@@ -70,6 +70,9 @@ pub async fn start(State(s): State<Drawer>, headers: HeaderMap, Json(b): Json<Ne
         && (expected.len() != 64 || !expected.bytes().all(|v| v.is_ascii_hexdigit())) {
             return Err(Error::Invalid("sha256 must contain 64 hexadecimal characters".into()));
     }
+    let _lock = s.transfer_lock.lock().await;
+    let reserved: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(size),0) FROM transfers WHERE expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now')").fetch_one(&s.pool).await?;
+    s.check_quota(reserved.saturating_add(b.size)).await?;
     let id = Uuid::new_v4().to_string();
     let expires = (Utc::now() + Duration::days(2)).to_rfc3339_opts(SecondsFormat::Millis, true);
     tokio::fs::create_dir_all(&s.transfer_dir).await?;

@@ -68,6 +68,7 @@ export interface DownloadLink {
 }
 
 export interface CreatedDownloadLink extends DownloadLink {
+  url_path: string;
   token: string;
 }
 
@@ -146,7 +147,7 @@ export interface AuthStatus {
   user: string | null;
 }
 
-export interface StorageStats { live_files: number; live_bytes: number; revisions: number; revision_bytes: number; blob_bytes: number; unreferenced_blob_bytes: number; staging_bytes: number; database_bytes: number; filesystem_total_bytes: number; filesystem_available_bytes: number; }
+export interface StorageStats { quota_bytes: number | null; live_files: number; live_bytes: number; revisions: number; revision_bytes: number; blob_bytes: number; unreferenced_blob_bytes: number; staging_bytes: number; database_bytes: number; filesystem_total_bytes: number; filesystem_available_bytes: number; }
 
 export interface HostMount { id: string; name: string }
 export interface HostEntry { name: string; path: string; kind: "folder" | "file"; size: number }
@@ -155,9 +156,14 @@ export interface ActivityEvent { id: number; actor: string; method: string; rout
 
 export interface UploadLink { id: string; expires_at: string; max_files: number; max_bytes: number; files_uploaded: number; bytes_uploaded: number }
 
+export interface UserAccount { id: string; username: string; quota_bytes: number; disabled: boolean }
+
 export const api = {
+  async users(): Promise<UserAccount[]> { return (await check(await fetch(`${BASE}/users`, { headers: headers() }))).json(); },
+  async createUser(username: string, password: string, quota_bytes: number): Promise<void> { await check(await fetch(`${BASE}/users`, json("POST", { username, password, quota_bytes }))); },
+  async changeUser(id: string, changes: { quota_bytes?: number; disabled?: boolean }): Promise<void> { await check(await fetch(`${BASE}/users/${id}`, json("PATCH", changes))); },
   async uploadLinks(id: string): Promise<UploadLink[]> { return (await check(await fetch(`${BASE}/nodes/${id}/upload-links`, { headers: headers() }))).json(); },
-  async createUploadLink(id: string, days: number, max_files: number, max_bytes: number): Promise<{ token: string }> { return (await check(await fetch(`${BASE}/nodes/${id}/upload-links`, json("POST", { days, max_files, max_bytes })))).json(); },
+  async createUploadLink(id: string, days: number, max_files: number, max_bytes: number): Promise<{ token: string; url_path: string }> { return (await check(await fetch(`${BASE}/nodes/${id}/upload-links`, json("POST", { days, max_files, max_bytes })))).json(); },
   async revokeUploadLink(id: string, link: string): Promise<void> { await check(await fetch(`${BASE}/nodes/${id}/upload-links/${link}`, { method: "DELETE", headers: headers() })); },
   async activity(before?: number): Promise<ActivityEvent[]> { return (await check(await fetch(`${BASE}/activity${before ? `?before=${before}` : ""}`, { headers: headers() }))).json(); },
   async mounts(): Promise<HostMount[]> { return (await check(await fetch(`${BASE}/mounts`, { headers: headers() }))).json(); },
@@ -179,13 +185,13 @@ export const api = {
     if (!response.ok) throw new ApiError(response.status, "Password authentication is not configured");
     return response.json();
   },
-  async login(password: string): Promise<void> {
+  async login(password: string, username = "admin"): Promise<void> {
     const response = await fetch("/auth/login", {
       method: "POST", credentials: "same-origin",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username, password }),
     });
-    if (!response.ok) throw new ApiError(response.status, "Incorrect administrator password");
+    if (!response.ok) throw new ApiError(response.status, "Incorrect username or password");
     window.dispatchEvent(new Event(AUTHENTICATED_EVENT));
   },
   async logout(): Promise<void> {

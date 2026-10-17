@@ -39,6 +39,9 @@ pub struct Drawer {
     pub(crate) pool: SqlitePool,
     pub(crate) data_dir: std::path::PathBuf,
     _store_lease: Arc<std::fs::File>,
+    pub(crate) quota: Arc<std::sync::atomic::AtomicI64>,
+    quota_lock: Arc<Mutex<()>>,
+    pub(crate) public_prefix: String,
     blobs: BlobStore,
     pub(crate) transfer_dir: std::path::PathBuf,
     pub(crate) transfer_lock: Arc<Mutex<()>>,
@@ -559,12 +562,23 @@ impl Drawer {
             pool,
             data_dir: data_dir.to_owned(),
             _store_lease: Arc::new(lease),
+            quota: Arc::new(std::sync::atomic::AtomicI64::new(i64::MAX)),
+            quota_lock: Arc::new(Mutex::new(())),
+            public_prefix: String::new(),
             blobs: BlobStore::new(data_dir.join("blobs")),
             transfer_dir: data_dir.join("transfers"),
             transfer_lock: Arc::new(Mutex::new(())),
             deposit_lock: Arc::new(Mutex::new(())),
             write_lock: Arc::new(Mutex::new(())),
         })
+    }
+
+    pub(crate) async fn check_quota(&self, additional: i64) -> Result<()> {
+        let quota = self.quota.load(std::sync::atomic::Ordering::Acquire);
+        if quota == i64::MAX { return Ok(()); }
+        let used: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(size),0) FROM revisions").fetch_one(&self.pool).await?;
+        if used.saturating_add(additional) > quota { return Err(Error::Forbidden("storage quota exceeded; history and trash count toward quota".into())); }
+        Ok(())
     }
 
     // ----- lookups -------------------------------------------------------------------------
@@ -1015,9 +1029,12 @@ impl Drawer {
             return Err(Error::Invalid("cannot write to the root".into()));
         }
         validate_properties(&opts.properties)?;
+        let _quota = self.quota_lock.lock().await;
+        if let Err(error) = self.check_quota(data.len() as i64).await
+            && !self.blobs.contains(&BlobStore::hash(data)).await? { return Err(error); }
         let hash = self.blobs.put(data).await?;
         let mime = guess_mime(&norm, data);
-        self.commit(&norm, &hash, data.len() as i64, &mime, &opts.properties, &opts).await
+        self.commit_blob(&norm, &hash, data.len() as i64, &mime, &opts.properties, &opts).await
     }
 
     /// Commit a staged transfer without loading the full file into memory.
@@ -1027,7 +1044,9 @@ impl Drawer {
         let norm = normalize(path)?;
         if norm == "/" { return Err(Error::Invalid("cannot write to root".into())); }
         validate_properties(&opts.properties)?;
-        let (hash, size) = self.blobs.put_file(staged).await?;
+        let _quota = self.quota_lock.lock().await;
+        self.check_quota(tokio::fs::metadata(staged).await?.len() as i64).await?;
+        let (hash, size) = self.blobs.put_file_checked(staged, expected_hash).await?;
         if expected_hash.is_some_and(|expected| expected != hash) {
             return Err(Error::Invalid("uploaded file SHA-256 checksum mismatch".into()));
         }
@@ -1037,7 +1056,19 @@ impl Drawer {
         let n = file.read(&mut sample).await?;
         sample.truncate(n);
         let mime = guess_mime(&norm, &sample);
-        self.commit(&norm, &hash, size, &mime, &opts.properties, &opts).await
+        self.commit_blob(&norm, &hash, size, &mime, &opts.properties, &opts).await
+    }
+
+    // Roll back newly unreferenced bytes on failed named-user writes. The quota guard
+    // serializes blob writers; metadata is rechecked against copies under write_lock.
+    async fn commit_blob(&self, norm: &str, hash: &str, size: i64, mime: &str, properties: &Properties, opts: &WriteOpts) -> Result<WriteOutcome> {
+        let result = self.commit(norm, hash, size, mime, properties, opts).await;
+        if result.is_err() && self.quota.load(std::sync::atomic::Ordering::Acquire) != i64::MAX {
+            let _guard = self.write_lock.lock().await;
+            let referenced: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM revisions WHERE hash=?)").bind(hash).fetch_one(&self.pool).await?;
+            if !referenced { let _ = tokio::fs::remove_file(self.blobs.path_for(hash)?).await; }
+        }
+        result
     }
 
     /// Core write path, shared by `write`, `copy` and `rollback`. The blob must already exist.
@@ -1086,6 +1117,7 @@ impl Drawer {
             }
         }
 
+        self.check_quota(size).await?;
         let ts = now();
         let mut tx = self.pool.begin().await?;
         let node_id = match &slot {

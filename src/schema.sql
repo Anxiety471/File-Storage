@@ -109,3 +109,8 @@ CREATE TABLE IF NOT EXISTS upload_links (
     max_files INTEGER NOT NULL, max_bytes INTEGER NOT NULL,
     files_uploaded INTEGER NOT NULL DEFAULT 0, bytes_uploaded INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS user_accounts (
+    id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
+    quota_bytes INTEGER NOT NULL CHECK(quota_bytes>0), disabled INTEGER NOT NULL DEFAULT 0
+);

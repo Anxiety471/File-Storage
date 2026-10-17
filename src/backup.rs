@@ -42,6 +42,19 @@ async fn readonly(root: &Path) -> Result<sqlx::SqlitePool> {
     let options = sqlx::sqlite::SqliteConnectOptions::new().filename(root.join("drawer.db")).read_only(true).pragma("query_only","ON");
     Ok(sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).connect_with(options).await?)
 }
+async fn snapshot_store(s: &Drawer, data: &Path, stage: &Path) -> Result<()> {
+    sqlx::query("VACUUM INTO ?").bind(stage.join("drawer.db").to_str().context("backup path must be UTF-8")?).execute(&s.pool).await?;
+    let hashes: Vec<String> = sqlx::query_scalar("SELECT DISTINCT hash FROM revisions").fetch_all(&s.pool).await?;
+    for hash in hashes { let path=blob_name(&hash)?; let dest=stage.join(&path); tokio::fs::create_dir_all(dest.parent().unwrap()).await?; tokio::fs::copy(data.join(path),dest).await?; }
+    Ok(())
+}
+fn valid_backup_path(path: &str) -> bool {
+    let inner = if let Some(rest)=path.strip_prefix("users/") {
+        let Some((id,inner))=rest.split_once('/') else { return false; };
+        if uuid::Uuid::parse_str(id).is_err() { return false; } inner
+    } else { path };
+    inner=="drawer.db" || inner.strip_prefix("blobs/").is_some_and(|p|p.len()==65 && p.as_bytes()[2]==b'/' && p.bytes().enumerate().all(|(i,b)|i==2 || b.is_ascii_hexdigit()))
+}
 pub async fn create(data: &Path, directory: &Path) -> Result<PathBuf> {
     if !data.join("drawer.db").is_file() { bail!("store does not exist"); }
     let s = Drawer::open_maintenance(data).await?;
@@ -51,9 +64,18 @@ pub async fn create(data: &Path, directory: &Path) -> Result<PathBuf> {
     tokio::fs::create_dir(&stage).await?;
     #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; tokio::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o700)).await?; }
     let result = async {
-        sqlx::query("VACUUM INTO ?").bind(stage.join("drawer.db").to_str().context("backup path must be UTF-8")?).execute(&s.pool).await?;
-        let hashes: Vec<String> = sqlx::query_scalar("SELECT DISTINCT hash FROM revisions").fetch_all(&s.pool).await?;
-        for hash in hashes { let path = blob_name(&hash)?; let dest = stage.join(&path); tokio::fs::create_dir_all(dest.parent().unwrap()).await?; tokio::fs::copy(data.join(path), dest).await?; }
+        snapshot_store(&s, data, &stage).await?;
+        let users: Vec<String> = sqlx::query_scalar("SELECT id FROM user_accounts").fetch_all(&s.pool).await?;
+        for id in users {
+            if uuid::Uuid::parse_str(&id).is_err() { bail!("invalid user store identifier"); }
+            let source=data.join("users").join(&id);
+            if source.join("drawer.db").is_file() {
+                let tenant=Drawer::open_maintenance(&source).await?;
+                let target=stage.join("users").join(&id); tokio::fs::create_dir_all(&target).await?;
+                let result=snapshot_store(&tenant,&source,&target).await;
+                tenant.pool.close().await; result?;
+            }
+        }
         let mut files = Vec::new();
         for (path, _) in crate::storage::files(&stage).await? { let (sha256,bytes) = hash(&path).await?; files.push(BackupFile { path: path.strip_prefix(&stage)?.to_str().context("backup path encoding")?.replace('\\',"/"), sha256,bytes }); }
         files.sort_by(|a,b| a.path.cmp(&b.path));
@@ -74,7 +96,7 @@ pub async fn verify(root: &Path) -> Result<Manifest> {
     if manifest.version != 1 { bail!("unsupported backup format"); }
     let mut seen = HashSet::new(); let mut blobs = BTreeMap::new();
     for file in &manifest.files {
-        let valid = file.path == "drawer.db" || file.path.strip_prefix("blobs/").is_some_and(|p| p.len()==65 && p.as_bytes()[2]==b'/' && p.bytes().enumerate().all(|(i,b)| i==2 || b.is_ascii_hexdigit()));
+        let valid = valid_backup_path(&file.path);
         if !valid || !seen.insert(&file.path) { bail!("invalid or duplicate manifest path"); }
         let path = root.join(&file.path);
         // Never traverse a symlink in a restored tree.
@@ -85,19 +107,22 @@ pub async fn verify(root: &Path) -> Result<Manifest> {
         if file.path != "drawer.db" { blobs.insert(file.path.clone(),(actual,size)); }
     }
     if !seen.contains(&"drawer.db".to_owned()) { bail!("backup is missing drawer.db"); }
-    let db = readonly(root).await?;
+    for database in manifest.files.iter().filter(|f| f.path.ends_with("drawer.db")) {
+    let prefix=Path::new(&database.path).parent().unwrap();
+    let db = readonly(&root.join(prefix)).await?;
     let integrity: String = sqlx::query_scalar("PRAGMA integrity_check").fetch_one(&db).await?;
     if integrity != "ok" { bail!("SQLite integrity check failed: {integrity}"); }
     let foreign_keys = sqlx::query("PRAGMA foreign_key_check").fetch_all(&db).await?;
     if !foreign_keys.is_empty() { bail!("SQLite foreign key check failed"); }
     let revisions: Vec<(String,i64)> = sqlx::query_as("SELECT DISTINCT hash,size FROM revisions").fetch_all(&db).await?;
     for (expected,size) in revisions {
-        let entry = blobs.get(&blob_name(&expected)?).context("referenced blob missing from backup")?;
+        let entry = blobs.get(&prefix.join(blob_name(&expected)?).to_string_lossy().replace('\\',"/")).context("referenced blob missing from backup")?;
         if entry.0 != expected || entry.1 != size as u64 { bail!("referenced blob is corrupt"); }
     }
     let missing: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes n LEFT JOIN revisions r ON r.node_id=n.id AND r.revision=n.head_revision WHERE n.kind='file' AND r.node_id IS NULL").fetch_one(&db).await?;
     db.close().await;
     if missing>0 { bail!("file head references missing revisions"); }
+    }
     Ok(manifest)
 }
 pub async fn restore(snapshot: &Path, target: &Path) -> Result<()> {

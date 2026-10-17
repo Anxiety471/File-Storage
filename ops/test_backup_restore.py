@@ -93,6 +93,18 @@ sys.exit(0)
         self.assertFalse(list((self.root / 'data').glob('.restore-stage-*')))
         self.assertEqual((self.root / 'data/.maintenance.lock').read_text(), 'live lease')
 
+    def test_private_workspaces_restore_and_preserve_previous_copy(self):
+        private = self.root / 'data/users/workspace'
+        private.mkdir(parents=True)
+        (private / 'drawer.db').write_text('private original')
+        archive = self.backup()
+        (private / 'drawer.db').write_text('private newer')
+        result = self.run_script('restore.sh', archive, input='RESTORE\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((private / 'drawer.db').read_text(), 'private original')
+        previous = next((self.root / 'data').glob('pre-restore-*'))
+        self.assertEqual((previous / 'users/workspace/drawer.db').read_text(), 'private newer')
+
     def test_checksum_must_match_selected_archive(self):
         archive = self.backup()
         archive.write_bytes(b'corrupt')

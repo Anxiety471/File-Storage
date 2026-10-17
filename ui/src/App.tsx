@@ -1,3 +1,4 @@
+import { UsersPanel } from "./UsersPanel";
 import { UploadLinksDialog } from "./UploadLinksDialog";
 import { ActivityPanel } from "./ActivityPanel";
 import { MountsPanel } from "./MountsPanel";
@@ -45,9 +46,10 @@ type Dialog =
       initial: string;
       action: string;
       secret?: boolean;
+      username?: boolean;
       /** Select only the name before the extension, like Drive. Off for paths and tokens. */
       selectStem?: boolean;
-      submit: (v: string) => Promise<void>;
+      submit: (v: string, username?: string) => Promise<void>;
     }
   | { kind: "confirm"; title: string; body: string; action: string; danger?: boolean; submit: () => Promise<void> };
 
@@ -147,6 +149,7 @@ export function App() {
   const [file, setFile] = useState<string | null>(initial.file);
   const [dirty, setDirty] = useState(false);
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  const [usersManager, setUsersManager] = useState(false);
   const [activityManager, setActivityManager] = useState(false);
   const [mountManager, setMountManager] = useState(false);
   const [storageManager, setStorageManager] = useState(false);
@@ -156,9 +159,10 @@ export function App() {
   const [toast, setToast] = useState<Toast | null>(null);
   const [newMenu, setNewMenu] = useState(false);
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  const [currentUser, setCurrentUser] = useState<string | null>(null);
   const [signedIn, setSignedIn] = useState(false);
   useEffect(() => {
-    api.authStatus().then((status) => setSignedIn(status.authenticated)).catch(() => {});
+    api.authStatus().then((status) => { setSignedIn(status.authenticated); setCurrentUser(status.user); }).catch(() => {});
   }, []);
   const [sort, setSort] = useState<Sort>(loadSort);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -264,14 +268,16 @@ export function App() {
         kind: "prompt",
         title: passwordMode ? "Sign in to Drawer" : "Access token",
         label: passwordMode
-          ? "Enter the administrator password. Drawer will use a private session cookie, not store your password in the browser."
+          ? "Password"
           : "This Drawer runs with DRAWER_TOKEN. Paste the token to continue; it is kept in this browser.",
         initial: "",
         action: "Continue",
         secret: true,
-        submit: async (v) => {
+        username: passwordMode,
+        submit: async (v, username) => {
           if (passwordMode) {
-            await api.login(v);
+            await api.login(v, username);
+            setCurrentUser((await api.authStatus()).user);
             setSignedIn(true);
           } else setToken(v);
           asking.current = false;
@@ -653,6 +659,8 @@ export function App() {
           <button type="button" className="btn" onClick={() => run(async () => {
             await api.logout();
             setSignedIn(false);
+            setCurrentUser(null);
+            setUsersManager(false);
             setUpdate(null);
             setNodes([]);
             setFile(null);
@@ -701,8 +709,9 @@ export function App() {
           {navItem("recent", "clock", "Recent")}
           {navItem("starred", "star", "Starred")}
           {navItem("trash", "trash", "Trash")}
+          {currentUser === "admin" && <button type="button" className="nav" onClick={() => setUsersManager(true)}><Icon name="folder" /><span className="nav-label">Users and quotas</span></button>}
           <button type="button" className="nav" onClick={() => setActivityManager(true)}><Icon name="clock" /><span className="nav-label">Activity history</span></button>
-          <button type="button" className="nav" onClick={() => setMountManager(true)}><Icon name="folder" /><span className="nav-label">Host folders</span></button>
+          {(currentUser === "admin" || currentUser === null) && <button type="button" className="nav" onClick={() => setMountManager(true)}><Icon name="folder" /><span className="nav-label">Host folders</span></button>}
           <button type="button" className="nav" onClick={() => setStorageManager(true)}><Icon name="folder" /><span className="nav-label">Storage</span></button>
           <button type="button" className="nav" title="Transfers" onClick={() => setTransferManager(true)}><Icon name="upload" /><span className="nav-label">Transfers</span></button>
         </nav>
@@ -852,6 +861,7 @@ export function App() {
         </main>
       </div>
 
+      {usersManager && <UsersPanel close={() => setUsersManager(false)} />}
       {activityManager && <ActivityPanel close={() => setActivityManager(false)} />}
       {mountManager && <MountsPanel close={() => { setMountManager(false); void refresh(); }} />}
       {storageManager && <StoragePanel close={() => setStorageManager(false)} />}
@@ -1539,7 +1549,7 @@ function ShareLinksDialog({
 
   const create = () => perform(async () => {
     const link = await api.createLink(node.id, 7, pinRevision ? node.head_revision ?? undefined : undefined, downloadLimit ? Number(downloadLimit) : undefined);
-    setNewUrl(`${window.location.origin}/s/${link.token}`);
+    setNewUrl(`${window.location.origin}${link.url_path}`);
     setLinks(await api.links(node.id));
     notify("Link created. Copy it now; Drawer will not display this secret again.");
   });
@@ -1605,6 +1615,7 @@ function ShareLinksDialog({
 
 function DialogBox({ dialog, close, notify }: { dialog: Dialog; close: () => void; notify: (t: string, tone?: "ok" | "error") => void }) {
   const [value, setValue] = useState(dialog.kind === "prompt" ? dialog.initial : "");
+  const [username, setUsername] = useState("admin");
   const [busy, setBusy] = useState(false);
   const input = useRef<HTMLInputElement>(null);
 
@@ -1627,7 +1638,7 @@ function DialogBox({ dialog, close, notify }: { dialog: Dialog; close: () => voi
     if (dialog.kind === "prompt" && !value.trim()) return;
     setBusy(true);
     try {
-      if (dialog.kind === "prompt") await dialog.submit(value.trim());
+      if (dialog.kind === "prompt") await dialog.submit(dialog.secret ? value : value.trim(), username);
       else await dialog.submit();
       close();
     } catch (e) {
@@ -1650,6 +1661,7 @@ function DialogBox({ dialog, close, notify }: { dialog: Dialog; close: () => voi
         }}
       >
         <h3 id="dialog-title">{dialog.title}</h3>
+        {dialog.kind === "prompt" && dialog.username && <label>Username<input aria-label="Username" autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} /></label>}
         {dialog.kind === "prompt" ? (
           <label>
             <span className="muted small">{dialog.label}</span>

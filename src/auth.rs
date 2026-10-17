@@ -13,26 +13,36 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 #[derive(Clone)]
-pub struct VerifiedAdmin;
+pub struct VerifiedActor;
 
 #[derive(Clone)]
 pub struct AuthGate {
     password_digest: [u8; 32],
     api_token: Option<String>,
-    sessions: Arc<Mutex<HashMap<String, Instant>>>,
+    sessions: Arc<Mutex<HashMap<String, Session>>>,
+    pub(crate) accounts: Option<crate::accounts::Accounts>,
     secure_cookie: bool,
 }
 
+#[derive(Clone)]
+struct Session { expiry: Instant, account: Option<String> }
+#[derive(Clone)]
+pub struct Principal { pub account: Option<crate::accounts::Account> }
+impl Principal { pub fn name(&self) -> &str { self.account.as_ref().map(|a|a.username.as_str()).unwrap_or("admin") } }
+
 #[derive(Deserialize)]
 pub struct LoginBody {
+    #[serde(default = "admin_name")] username: String,
     password: String,
 }
 #[derive(Serialize)]
 pub struct LoginStatus {
     pub mode: &'static str,
     pub authenticated: bool,
-    pub user: Option<&'static str>,
+    pub user: Option<String>,
 }
+
+fn admin_name() -> String { "admin".into() }
 
 fn digest(s: &str) -> [u8; 32] {
     Sha256::digest(s.as_bytes()).into()
@@ -53,22 +63,33 @@ impl AuthGate {
     pub fn new(password: String, api_token: Option<String>, secure_cookie: bool) -> Self {
         Self {
             password_digest: digest(&password),
+            accounts: None,
             api_token,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             secure_cookie,
         }
     }
 
-    pub async fn authenticated(&self, headers: &HeaderMap) -> bool {
+    pub fn with_accounts(mut self, accounts: crate::accounts::Accounts) -> Self { self.accounts = Some(accounts); self }
+
+    pub async fn identity(&self, headers: &HeaderMap) -> Option<Principal> {
         if let Some(expected) = &self.api_token
             && token(headers).is_some_and(|candidate| equal(candidate.as_bytes(), expected.as_bytes())) {
-                return true;
+            return Some(Principal { account: None });
         }
-        let Some(secret) = cookie(headers) else { return false };
-        let mut sessions = self.sessions.lock().await;
-        sessions.retain(|_, expiry| *expiry > Instant::now());
-        sessions.contains_key(secret)
+        let secret = cookie(headers)?;
+        let session = {
+            let mut sessions = self.sessions.lock().await;
+            sessions.retain(|_, session| session.expiry > Instant::now());
+            sessions.get(secret)?.clone()
+        };
+        let account = match session.account {
+            None => None,
+            Some(id) => Some(self.accounts.as_ref()?.by_id(&id).await.ok()?),
+        };
+        Some(Principal { account })
     }
+    pub async fn authenticated(&self, headers: &HeaderMap) -> bool { self.identity(headers).await.is_some() }
 
     fn set_cookie(&self, value: &str, max_age: usize) -> String {
         format!("drawer_session={value}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}{}",
@@ -77,13 +98,21 @@ impl AuthGate {
 }
 
 pub async fn login(State(gate): State<AuthGate>, Json(input): Json<LoginBody>) -> Response {
-    if !equal(&digest(&input.password), &gate.password_digest) {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
+    let account = if input.username == "admin" {
+        if !equal(&digest(&input.password), &gate.password_digest) { return StatusCode::UNAUTHORIZED.into_response(); }
+        None
+    } else {
+        let Some(accounts) = &gate.accounts else { return StatusCode::UNAUTHORIZED.into_response(); };
+        match accounts.credentials(&input.username, input.password).await {
+            Ok(Some(account)) => Some(account),
+            _ => return StatusCode::UNAUTHORIZED.into_response(),
+        }
+    };
+    let user = account.as_ref().map(|a|a.username.clone()).unwrap_or_else(admin_name);
     // 256 bits of randomness, with expiration enforced server-side as well.
     let secret = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-    gate.sessions.lock().await.insert(secret.clone(), Instant::now() + Duration::from_secs(24 * 3600));
-    let mut response = Json(LoginStatus { mode: "password", authenticated: true, user: Some("admin") }).into_response();
+    gate.sessions.lock().await.insert(secret.clone(), Session { expiry: Instant::now() + Duration::from_secs(24 * 3600), account: account.map(|a|a.id) });
+    let mut response = Json(LoginStatus { mode: "password", authenticated: true, user: Some(user) }).into_response();
     if let Ok(value) = gate.set_cookie(&secret, 24 * 3600).parse() {
         response.headers_mut().insert(header::SET_COOKIE, value);
     }
@@ -92,8 +121,8 @@ pub async fn login(State(gate): State<AuthGate>, Json(input): Json<LoginBody>) -
 }
 
 pub async fn me(State(gate): State<AuthGate>, headers: HeaderMap) -> Json<LoginStatus> {
-    let authenticated = gate.authenticated(&headers).await;
-    Json(LoginStatus { mode: "password", authenticated, user: authenticated.then_some("admin") })
+    let identity = gate.identity(&headers).await;
+    Json(LoginStatus { mode: "password", authenticated: identity.is_some(), user: identity.map(|p|p.name().to_owned()) })
 }
 
 pub async fn logout(State(gate): State<AuthGate>, headers: HeaderMap) -> Response {

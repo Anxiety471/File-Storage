@@ -9,6 +9,7 @@ export function StoragePanel({ close }: { close: () => void }) {
   return <div className="modal-scrim" onMouseDown={close}><section className="modal operations-modal" role="dialog" aria-modal="true" aria-labelledby="storage-title" onMouseDown={(e) => e.stopPropagation()}>
     <h3 id="storage-title">Storage</h3>{error && <p role="alert">{error}</p>}
     {stats && <><p>{stats.live_files.toLocaleString()} live files · {stats.revisions.toLocaleString()} revisions</p>
+      {stats.quota_bytes !== null && <p>Workspace quota: {bytes(stats.revision_bytes)} / {bytes(stats.quota_bytes)} used by all revisions.</p>}
       <progress aria-label="Filesystem space used" max={stats.filesystem_total_bytes} value={stats.filesystem_total_bytes - stats.filesystem_available_bytes} />
       <p>{bytes(stats.filesystem_available_bytes)} available on the host filesystem</p>
       <ul className="operations-list">{[

@@ -172,6 +172,8 @@ pub async fn update_install() -> Result<Json<Value>> {
 pub fn router() -> Router<Drawer> {
     Router::new()
         .route("/health", get(health))
+        .route("/users", get(crate::accounts::list).post(crate::accounts::create))
+        .route("/users/{id}", axum::routing::patch(crate::accounts::change))
         .route("/tree", get(tree))
         .route("/archive", get(crate::archive::download))
         .route("/storage", get(crate::storage::stats))
@@ -279,7 +281,7 @@ async fn diff(State(s): State<Drawer>, Query(q): Query<DiffQ>) -> Result<Json<Va
 }
 
 /// Replace `old_string` with `new_string` in a text file, as one guarded revision.
-async fn edit(State(s): State<Drawer>, verified: Option<axum::Extension<crate::auth::VerifiedAdmin>>, headers: HeaderMap, Json(b): Json<EditBody>) -> Result<Json<Value>> {
+async fn edit(State(s): State<Drawer>, verified: Option<axum::Extension<crate::auth::VerifiedActor>>, headers: HeaderMap, Json(b): Json<EditBody>) -> Result<Json<Value>> {
     let mut opts = WriteOpts::new(body_actor(verified.is_some(), b.author, &headers), b.comment.unwrap_or_default());
     opts.if_head_revision = b.if_head_revision;
     let e = Edit { old: b.old_string, new: b.new_string, replace_all: b.replace_all };
@@ -394,13 +396,13 @@ async fn revisions(State(s): State<Drawer>, Query(q): Query<PathQ>) -> Result<Js
     Ok(Json(json!({ "revisions": s.revisions(target(&q)?).await? })))
 }
 
-async fn rollback(State(s): State<Drawer>, verified: Option<axum::Extension<crate::auth::VerifiedAdmin>>, headers: HeaderMap, Json(b): Json<RollbackBody>) -> Result<Json<Value>> {
+async fn rollback(State(s): State<Drawer>, verified: Option<axum::Extension<crate::auth::VerifiedActor>>, headers: HeaderMap, Json(b): Json<RollbackBody>) -> Result<Json<Value>> {
     let mut opts = WriteOpts::new(body_actor(verified.is_some(), b.author, &headers), b.comment.unwrap_or_default());
     opts.if_head_revision = b.if_head_revision;
     Ok(out(s.rollback(pick(&b.id, &b.path)?, b.revision, opts).await?))
 }
 
-async fn copy(State(s): State<Drawer>, verified: Option<axum::Extension<crate::auth::VerifiedAdmin>>, headers: HeaderMap, Json(b): Json<CopyBody>) -> Result<Json<Value>> {
+async fn copy(State(s): State<Drawer>, verified: Option<axum::Extension<crate::auth::VerifiedActor>>, headers: HeaderMap, Json(b): Json<CopyBody>) -> Result<Json<Value>> {
     let mut opts = WriteOpts::new(body_actor(verified.is_some(), b.author, &headers), b.comment.unwrap_or_default());
     opts.if_head_revision = b.if_head_revision;
     Ok(out(s.copy(pick(&b.from_id, &b.from)?, &b.to, b.source_revision, opts).await?))
@@ -433,7 +435,10 @@ async fn create_link(
     headers: HeaderMap,
     Json(body): Json<LinkBody>,
 ) -> Result<Json<Value>> {
-    Ok(out(s.create_download_link_with_options(&id, &actor(&headers), body.expires_in_days.unwrap_or(7), body.revision, body.max_downloads).await?))
+    let link = s.create_download_link_with_options(&id, &actor(&headers), body.expires_in_days.unwrap_or(7), body.revision, body.max_downloads).await?;
+    let mut value = serde_json::to_value(&link).expect("serializable");
+    value["url_path"] = json!(format!("{}/s/{}",s.public_prefix,link.token));
+    Ok(Json(value))
 }
 
 async fn list_links(State(s): State<Drawer>, Path(id): Path<String>, headers: HeaderMap) -> Result<Json<Value>> {
@@ -499,5 +504,5 @@ async fn search(State(s): State<Drawer>, Query(q): Query<SearchQ>) -> Result<Jso
 }
 
 fn body_actor(verified: bool, supplied: Option<String>, headers: &HeaderMap) -> String {
-    if verified { "admin".into() } else { supplied.unwrap_or_else(|| actor(headers)) }
+    if verified { actor(headers) } else { supplied.unwrap_or_else(|| actor(headers)) }
 }

@@ -376,3 +376,24 @@ Failed uploads refund reservations; a crash or disconnected handler can leave a
 reservation consumed, so create a replacement link if necessary. Revocation or
 folder changes are rechecked at commit. Only token hashes are stored. Treat these
 capability links as secrets; file contents are not scanned for malware.
+
+### Named users and private quotas
+
+With `DRAWER_ADMIN_PASSWORD` enabled, sign in as `admin` and open **Users and
+quotas** to create accounts, set quotas, or disable access. New accounts require
+12-character passwords and store salted Argon2id hashes. Sign in with the account
+name and password; the existing machine token remains an administrator credential.
+Each account gets an independent store under `users/UUID`, including isolated MCP
+sessions, search, revisions, transfers and activity. Named users cannot manage
+accounts, expose host mounts or install server updates. Disabling an account
+blocks existing sessions and its public links on their next request.
+
+Quota is logical revision content, including history and trash; identical revisions
+on different files each count. It is not a host filesystem hard quota. New staged
+transfers reserve against existing transfer sizes. Lower quotas block writes until
+usage fits. Share through expiring download/upload-only URLs, which include the
+workspace identity; node permission grants do not bridge private workspaces.
+Root snapshots include existing user stores, with an exclusive lease on each.
+Cleanup targets only the selected store; operators may select a user's store with
+`--data-dir` when offline maintenance is needed. Back up the whole root before
+changing account data or cleaning private history.

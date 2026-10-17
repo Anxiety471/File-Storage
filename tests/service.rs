@@ -589,3 +589,18 @@ async fn cleanup_preview_preserves_pins_heads_and_shared_blobs() {
     assert!(reopened.read(Ref::Path("/history"),Some(3)).await.is_err());
     assert!(reopened.stat(Ref::Id(&trash.node.id)).await.is_err());
 }
+
+#[tokio::test]
+async fn root_backup_includes_private_user_stores() {
+    let dir=tempfile::tempdir().unwrap(); let data=dir.path().join("root");
+    let root=Drawer::open(&data).await.unwrap(); drop(root);
+    let id=uuid::Uuid::new_v4().to_string();
+    let db=sqlx::SqlitePool::connect(&format!("sqlite:{}",data.join("drawer.db").display())).await.unwrap();
+    sqlx::query("INSERT INTO user_accounts(id,username,password_hash,quota_bytes) VALUES(?,'alice','test-only',100)").bind(&id).execute(&db).await.unwrap(); db.close().await;
+    let private=Drawer::open(&data.join("users").join(&id)).await.unwrap();
+    private.write("/secret",b"private-backup",by("alice", "")).await.unwrap(); drop(private);
+    let snapshot=drawer::backup::create(&data,&dir.path().join("backups")).await.unwrap();
+    let restored=dir.path().join("restored"); drawer::backup::restore(&snapshot,&restored).await.unwrap();
+    let private=Drawer::open(&restored.join("users").join(&id)).await.unwrap();
+    assert_eq!(private.read(Ref::Path("/secret"),None).await.unwrap().1,b"private-backup");
+}

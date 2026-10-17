@@ -27,7 +27,7 @@ pub async fn create(State(s):State<Drawer>,Path(id):Path<String>,headers:HeaderM
     let link=uuid::Uuid::new_v4().to_string();
     let expires=(chrono::Utc::now()+chrono::Duration::days(p.days)).to_rfc3339_opts(chrono::SecondsFormat::Millis,true);
     sqlx::query("INSERT INTO upload_links(id,node_id,token_hash,expires_at,max_files,max_bytes) VALUES(?,?,?,?,?,?)").bind(&link).bind(id).bind(digest(&token)?).bind(&expires).bind(p.max_files).bind(p.max_bytes).execute(&s.pool).await?;
-    Ok(Json(json!({"id":link,"token":token,"expires_at":expires})))
+    Ok(Json(json!({"id":link,"token":token,"expires_at":expires,"url_path":format!("{}/drop/{token}",s.public_prefix)})))
 }
 pub async fn list(State(s):State<Drawer>,Path(id):Path<String>,headers:HeaderMap)->Result<Json<Vec<UploadLink>>> {
     s.authorize(&id,actor(&headers),OWNER).await?;

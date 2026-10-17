@@ -6,6 +6,7 @@ use crate::{error::Result, service::Drawer};
 
 #[derive(Serialize)]
 pub struct StorageStats {
+    pub quota_bytes: Option<i64>,
     pub live_files: i64, pub live_bytes: i64, pub revisions: i64, pub revision_bytes: i64,
     pub blob_bytes: u64, pub unreferenced_blob_bytes: u64, pub staging_bytes: u64,
     pub database_bytes: u64, pub filesystem_total_bytes: u64, pub filesystem_available_bytes: u64,
@@ -47,5 +48,5 @@ pub async fn stats(State(s): State<Drawer>) -> Result<Json<StorageStats>> {
     }
     let dir = s.data_dir.clone();
     let (total, available) = tokio::task::spawn_blocking(move || -> std::io::Result<_> { Ok((fs2::total_space(&dir)?, fs2::available_space(&dir)?)) }).await.map_err(|e| crate::error::Error::Internal(e.to_string()))??;
-    Ok(Json(StorageStats { live_files, live_bytes, revisions, revision_bytes, blob_bytes: blobs.iter().map(|(_, n)| n).sum(), unreferenced_blob_bytes, staging_bytes, database_bytes, filesystem_total_bytes: total, filesystem_available_bytes: available }))
+    Ok(Json(StorageStats { quota_bytes: { let limit=s.quota.load(std::sync::atomic::Ordering::Acquire); (limit!=i64::MAX).then_some(limit) }, live_files, live_bytes, revisions, revision_bytes, blob_bytes: blobs.iter().map(|(_, n)| n).sum(), unreferenced_blob_bytes, staging_bytes, database_bytes, filesystem_total_bytes: total, filesystem_available_bytes: available }))
 }

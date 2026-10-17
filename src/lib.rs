@@ -7,6 +7,7 @@ pub mod activity;
 pub mod backup;
 pub mod cleanup;
 pub mod deposits;
+pub mod accounts;
 pub mod auth;
 pub mod blob;
 pub mod cli;
@@ -52,6 +53,7 @@ pub fn app_with_auth(
     secure_cookie: bool,
 ) -> Router {
     let password_mode = admin_password.as_ref().is_some_and(|s| !s.is_empty());
+    let accounts = accounts::Accounts::new(svc.clone());
     let audit_svc = svc.clone();
     let mcp_svc = svc.clone();
     let mcp = StreamableHttpService::new(
@@ -62,6 +64,8 @@ pub fn app_with_auth(
     // Top level, ahead of the UI fallback, so `/health` is never answered with index.html.
     let mut app = Router::new()
         .route("/health", axum::routing::get(api::health))
+        .route("/u/{id}/s/{token}", axum::routing::get(accounts::shared).with_state(accounts.clone()))
+        .route("/u/{id}/drop/{token}", axum::routing::get(accounts::landing).post(accounts::upload).with_state(accounts.clone()).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)))
         .route("/drop/{token}", axum::routing::get(deposits::landing).post(deposits::upload).with_state(svc.clone()).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)))
         .route("/s/{token}", axum::routing::get(api::download_shared).with_state(svc.clone()))
         .nest("/drawer/v1", api::router().with_state(svc).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)))
@@ -69,7 +73,7 @@ pub fn app_with_auth(
         .layer(middleware::from_fn(session_delete_ok))
         .layer(middleware::from_fn_with_state(audit_svc.clone(), activity::record));
     if let Some(password) = admin_password.filter(|s| !s.is_empty()) {
-        let gate = auth::AuthGate::new(password, token, secure_cookie);
+        let gate = auth::AuthGate::new(password, token, secure_cookie).with_accounts(accounts);
         app = app.merge(
             Router::new()
                 .route("/auth/login", axum::routing::post(auth::login))
@@ -84,12 +88,16 @@ pub fn app_with_auth(
                 let path = req.uri().path();
                 let restricted = path.starts_with("/drawer/v1") || path.starts_with("/mcp");
                 if restricted {
-                    if !gate.authenticated(req.headers()).await {
-                        return StatusCode::UNAUTHORIZED.into_response();
+                    let Some(identity) = gate.identity(req.headers()).await else { return StatusCode::UNAUTHORIZED.into_response(); };
+                    req.headers_mut().insert("x-drawer-author", identity.name().parse().unwrap());
+                    req.extensions_mut().insert(auth::VerifiedActor);
+                    if let Some(account) = identity.account {
+                        if path_admin(req.uri().path()) { return StatusCode::FORBIDDEN.into_response(); }
+                        match gate.accounts.as_ref().unwrap().tenant(&account).await {
+                            Ok((_, router)) => { use tower::ServiceExt; req.extensions_mut().clear(); req.extensions_mut().insert(auth::VerifiedActor); return router.oneshot(req).await.unwrap(); },
+                            Err(error) => return error.into_response(),
+                        }
                     }
-                    // Only a verified admin session or machine token can supply an author identity.
-                    req.headers_mut().insert("x-drawer-author", "admin".parse().unwrap());
-                    req.extensions_mut().insert(auth::VerifiedAdmin);
                 }
                 next.run(req).await
             }
@@ -128,7 +136,9 @@ async fn check_token(token: &str, req: Request, next: Next) -> Response {
         });
     let public_drop = matches!(*req.method(), axum::http::Method::GET | axum::http::Method::POST)
         && req.uri().path().strip_prefix("/drop/").is_some_and(|token| token.len()==64 && token.bytes().all(|b| b.is_ascii_hexdigit()));
-    if public_link || public_drop {
+    let parts: Vec<_> = req.uri().path().split('/').collect();
+    let tenant_capability = parts.len()==5 && parts[1]=="u" && uuid::Uuid::parse_str(parts[2]).is_ok() && parts[4].len()==64 && parts[4].bytes().all(|b|b.is_ascii_hexdigit()) && ((parts[3]=="s" && req.method()==axum::http::Method::GET) || (parts[3]=="drop" && matches!(*req.method(),axum::http::Method::GET | axum::http::Method::POST)));
+    if public_link || public_drop || tenant_capability {
         return next.run(req).await;
     }
     let ok = req
@@ -138,4 +148,14 @@ async fn check_token(token: &str, req: Request, next: Next) -> Response {
         .and_then(|v| v.strip_prefix("Bearer "))
         .is_some_and(|t| t == token);
     if ok { next.run(req).await } else { StatusCode::UNAUTHORIZED.into_response() }
+}
+
+fn path_admin(path: &str) -> bool {
+    ["/drawer/v1/users", "/drawer/v1/mounts", "/drawer/v1/update"].iter().any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/")))
+}
+/// Tenant routers persist for the session manager lifetime; never recreate MCP per request.
+fn private_app(svc: Drawer, actor: String) -> Router {
+    let mcp_svc=svc.clone();
+    let mcp=StreamableHttpService::new(move || Ok(mcp::DrawerMcp::new(mcp_svc.clone()).with_verified_actor(actor.clone())), Arc::new(LocalSessionManager::default()), StreamableHttpServerConfig::default());
+    Router::new().nest("/drawer/v1",api::router().with_state(svc.clone()).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES))).nest_service("/mcp",mcp).layer(middleware::from_fn(session_delete_ok)).layer(middleware::from_fn_with_state(svc,activity::record))
 }

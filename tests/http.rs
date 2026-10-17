@@ -800,3 +800,62 @@ async fn upload_only_capability_enforces_budget_revocation_and_no_read_access() 
     assert_eq!(send(&app,revoke).await.status(),StatusCode::OK);
     assert_eq!(send(&app,get(&path)).await.status(),StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn named_users_are_isolated_quota_limited_and_revocable() {
+    let dir=tempfile::tempdir().unwrap();
+    let s=Drawer::open(dir.path()).await.unwrap();
+    s.write("/admin-secret",b"private",drawer::service::WriteOpts::new("admin", "")).await.unwrap();
+    let app=drawer::app_with_auth(s,Some("machine".into()),None,Some("admin-password".into()),false);
+    let new_user=|name:&str|Request::post("/drawer/v1/users").header("authorization","Bearer machine").header("content-type","application/json").body(Body::from(json!({"username":name,"password":"a-long-password","quota_bytes":5}).to_string())).unwrap();
+    let alice=json_of(send(&app,new_user("alice")).await).await;
+    json_of(send(&app,new_user("bob")).await).await;
+    async fn login(app:&axum::Router,name:&str)->String {
+        let response=send(app,json_post("/auth/login",json!({"username":name,"password":"a-long-password"}))).await;
+        assert_eq!(response.status(),StatusCode::OK);
+        response.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_owned()
+    }
+    let alice_cookie=login(&app,"alice").await; let bob_cookie=login(&app,"bob").await;
+    let read=|cookie:&str,path:&str|Request::get(path).header("cookie",cookie).body(Body::empty()).unwrap();
+    assert_eq!(send(&app,read(&alice_cookie,"/drawer/v1/files?path=/admin-secret")).await.status(),StatusCode::NOT_FOUND);
+    let write=Request::put("/drawer/v1/files?path=/mine").header("cookie",&alice_cookie).header("x-drawer-author","admin").body(Body::from("12345")).unwrap();
+    let result=json_of(send(&app,write).await).await;
+    assert_eq!(result["node"]["owner"],"alice");
+    let id=result["node"]["id"].as_str().unwrap();
+    assert_eq!(send(&app,read(&bob_cookie,&format!("/drawer/v1/files?id={id}"))).await.status(),StatusCode::NOT_FOUND);
+    let extra=Request::put("/drawer/v1/files?path=/extra").header("cookie",&alice_cookie).body(Body::from("x")).unwrap();
+    assert_eq!(send(&app,extra).await.status(),StatusCode::FORBIDDEN);
+    assert_eq!(send(&app,read(&alice_cookie,"/drawer/v1/users")).await.status(),StatusCode::FORBIDDEN);
+    assert_eq!(send(&app,read(&alice_cookie,"/drawer/v1/update")).await.status(),StatusCode::FORBIDDEN);
+    let share=Request::post(format!("/drawer/v1/nodes/{id}/links")).header("cookie",&alice_cookie).header("content-type","application/json").body(Body::from("{}")).unwrap();
+    let link=json_of(send(&app,share).await).await;
+    assert!(link["url_path"].as_str().unwrap().starts_with("/u/"));
+    assert_eq!(send(&app,get(link["url_path"].as_str().unwrap())).await.status(),StatusCode::OK);
+    let disable=Request::patch(format!("/drawer/v1/users/{}",alice["id"].as_str().unwrap())).header("authorization","Bearer machine").header("content-type","application/json").body(Body::from(r#"{"disabled":true}"#)).unwrap();
+    assert_eq!(send(&app,disable).await.status(),StatusCode::OK);
+    assert_eq!(send(&app,read(&alice_cookie,"/drawer/v1/tree")).await.status(),StatusCode::UNAUTHORIZED);
+    assert_eq!(send(&app,get(link["url_path"].as_str().unwrap())).await.status(),StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn named_user_mcp_uses_private_store_and_verified_actor() {
+    let dir=tempfile::tempdir().unwrap();
+    let app=drawer::app_with_auth(Drawer::open(dir.path()).await.unwrap(),Some("machine".into()),None,Some("password".into()),false);
+    let create=Request::post("/drawer/v1/users").header("authorization","Bearer machine").header("content-type","application/json").body(Body::from(r#"{"username":"mcpuser","password":"a-long-password","quota_bytes":100}"#)).unwrap();
+    assert_eq!(send(&app,create).await.status(),StatusCode::OK);
+    let login=send(&app,json_post("/auth/login",json!({"username":"mcpuser","password":"a-long-password"}))).await;
+    let cookie=login.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_owned();
+    let mcp=|body:Value,session:Option<&str>| { let mut request=Request::post("/mcp").header("host","localhost").header("cookie",&cookie).header("content-type","application/json").header("accept","application/json, text/event-stream"); if let Some(session)=session { request=request.header("mcp-session-id",session); } request.body(Body::from(body.to_string())).unwrap() };
+    let initialized=send(&app,mcp(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),None)).await;
+    if initialized.status()!=StatusCode::OK { panic!("MCP initialize: {}",String::from_utf8_lossy(&initialized.into_body().collect().await.unwrap().to_bytes())); }
+    let session=initialized.headers()["mcp-session-id"].to_str().unwrap().to_owned();
+    send(&app,mcp(json!({"jsonrpc":"2.0","method":"notifications/initialized"}),Some(&session))).await;
+    let result=send(&app,mcp(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"drawer_write","arguments":{"path":"/mcp-private","content":"hi","author":"admin"}}}),Some(&session))).await;
+    assert_eq!(result.status(),StatusCode::OK);
+    let bytes=result.into_body().collect().await.unwrap().to_bytes();
+    assert!(!String::from_utf8_lossy(&bytes).contains("\"isError\":true"));
+    let meta=Request::get("/drawer/v1/files/meta?path=/mcp-private").header("cookie",cookie).body(Body::empty()).unwrap();
+    assert_eq!(json_of(send(&app,meta).await).await["owner"],"mcpuser");
+    let admin=Request::get("/drawer/v1/files?path=/mcp-private").header("authorization","Bearer machine").body(Body::empty()).unwrap();
+    assert_eq!(send(&app,admin).await.status(),StatusCode::NOT_FOUND);
+}
