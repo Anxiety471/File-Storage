@@ -30,6 +30,9 @@ pub async fn download(State(s): State<Drawer>, Query(selection): Query<Selection
     let mut entries = Vec::with_capacity(nodes.len());
     for node in nodes.values() {
         let name = node.path.trim_start_matches('/');
+        if name.contains(['\\', ':']) || name.split('/').any(|part| part.trim_end_matches(['.', ' ']).is_empty()) {
+            return Err(Error::Invalid("archive contains a filename that an extractor could treat as a path; rename it before downloading".into()));
+        }
         if node.kind == "folder" { entries.push((format!("{name}/"), None)); }
         else {
             let (_, path) = s.read_file_path(Ref::Id(&node.id), node.head_revision).await?;
