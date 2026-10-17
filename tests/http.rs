@@ -871,3 +871,57 @@ async fn archive_rejects_names_that_windows_extractors_treat_as_paths() {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
     }
 }
+
+#[tokio::test]
+async fn memory_vault_links_tags_and_mcp() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let app = drawer::app(Drawer::open(dir.path()).await?, None, None);
+    let put = |body: Value| {
+        Request::put("/drawer/v1/memory/note")
+            .header("content-type", "application/json")
+            .header("x-drawer-author", "tester")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let r = send(&app, put(json!({"name":"Drawer","content":"A file server. See [[people/Alice]] #infra","tags":["project"]}))).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let saved = json_of(r).await;
+    assert_eq!(saved["path"], "/memory/Drawer.md");
+    assert_eq!(saved["created"], true);
+    send(&app, put(json!({"name":"people/Alice","content":"Maintains [[Drawer]]","tags":["person"]}))).await;
+    // Appending to an existing note keeps its content.
+    let r = send(&app, put(json!({"name":"drawer","content":"Runs on SQLite","append":true}))).await;
+    assert_eq!(json_of(r).await["created"], false);
+
+    let note = json_of(send(&app, get("/drawer/v1/memory/note?name=Drawer")).await).await;
+    assert!(note["content"].as_str().unwrap().contains("Runs on SQLite"));
+    assert_eq!(note["tags"], json!(["project", "infra"]));
+    assert_eq!(note["links"][0]["path"], "/memory/people/Alice.md");
+    assert_eq!(note["backlinks"][0]["name"], "Alice");
+    assert_eq!(send(&app, get("/drawer/v1/memory/note?name=Nope")).await.status(), StatusCode::NOT_FOUND);
+
+    let hits = json_of(send(&app, get("/drawer/v1/memory/notes?tag=person")).await).await;
+    assert_eq!(hits["notes"].as_array().unwrap().len(), 1);
+    let hits = json_of(send(&app, get("/drawer/v1/memory/notes?q=sqlite")).await).await;
+    assert_eq!(hits["notes"][0]["name"], "Drawer");
+    let tags = json_of(send(&app, get("/drawer/v1/memory/tags")).await).await;
+    assert_eq!(tags["tags"].as_array().unwrap().len(), 3);
+
+    // The same vault over MCP.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = ClientConfig::default()
+        .serve(StreamableHttpClientTransport::from_config(StreamableHttpClientTransportConfig::with_uri(format!("http://{addr}/mcp"))))
+        .await?;
+    let args = |v: Value| v.as_object().unwrap().clone();
+    let r = client.call_tool(CallToolRequestParams::new("memory_remember").with_arguments(args(json!({"name":"Prefs","content":"Likes tabs #style"})))).await?;
+    assert_ne!(r.is_error, Some(true));
+    let r = client.call_tool(CallToolRequestParams::new("memory_recall").with_arguments(args(json!({"tag":"style"})))).await?;
+    assert!(format!("{:?}", r.content).contains("Prefs"));
+    let r = client.call_tool(CallToolRequestParams::new("memory_read").with_arguments(args(json!({"name":"Prefs"})))).await?;
+    assert!(format!("{:?}", r.content).contains("Likes tabs"));
+    client.cancel().await?;
+    server.abort();
+    Ok(())
+}

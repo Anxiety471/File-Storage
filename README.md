@@ -159,7 +159,7 @@ mcp_servers:
 | `opencode` | JSON for `opencode.json` |
 | `json` | an `mcpServers` block for Claude Desktop, Cursor, Windsurf and most others |
 
-The server exposes 21 tools:
+The server exposes 25 tools:
 
 | Tools | |
 | --- | --- |
@@ -168,6 +168,7 @@ The server exposes 21 tools:
 | `drawer_revisions`, `drawer_diff`, `drawer_rollback`, `drawer_copy`, `drawer_move` | history and layout |
 | `drawer_delete`, `drawer_trash`, `drawer_restore`, `drawer_purge` | trash lifecycle |
 | `drawer_star`, `drawer_share`, `drawer_unshare` | stars and grants |
+| `memory_remember`, `memory_recall`, `memory_read`, `memory_tags` | [AI memory vault](#ai-memory-vault) |
 
 Built for how agents work:
 
@@ -185,6 +186,17 @@ For concurrent agents, read the file, then write with `if_head_revision` set to 
 Setup for Hermes, Claude Code, Claude Desktop, Codex, Gemini CLI, Cursor, VS Code, the OpenAI Agents SDK and LangChain is in [docs/harnesses.md](docs/harnesses.md).
 
 **Mirroring Hermes output.** MCP only saves what the agent chooses to save. [`integrations/hermes/drawer-mirror`](integrations/hermes/drawer-mirror/README.md) is a Hermes plugin that copies every successful `write_file` and `patch` into Drawer after the fact, and records the links Hermes shares. Hermes keeps its own artifacts, and both can run side by side.
+
+### AI memory vault
+
+Drawer can hold long-term memory for AI agents, designed like an [Obsidian](https://obsidian.md) vault. Memories are plain Markdown notes in the `/memory` folder, so they are versioned, searchable, and editable in the web UI like any other file, and you can open the folder in Obsidian itself via a synced copy (`drawer sync`).
+
+- **Notes** are `.md` files. The note name is the file name; folders (`people/Alice`) work as in Obsidian.
+- **Links**: `[[Note Name]]`, `[[folder/Note|alias]]` and `[[Note#Heading]]`. A bare name matches the note in any folder, shortest path first. Reading a note returns its outgoing links (marking ones that point to notes that don't exist yet) and its **backlinks**.
+- **Tags**: `#tag` in the text and `tags: [a, b]` (or a YAML list) in frontmatter. `#project` also matches `#project/drawer`. Code blocks and inline code are ignored.
+- **Derived index.** Links, backlinks and tags are computed from the files on each request, so edits made through any route (UI, REST, `drawer_write`, sync) are reflected at once. This suits vaults of up to a few thousand notes.
+
+Agents use the `memory_*` MCP tools: `memory_recall` (text and/or tag search), `memory_read` (a note with links and backlinks), `memory_remember` (create, replace or `append`) and `memory_tags`. The server's MCP instructions tell clients to use them. The same operations are in the REST API under `/memory`.
 
 ## REST API
 
@@ -216,6 +228,9 @@ Base path `/drawer/v1`. Nodes are named by `path=` or `id=`. Mutations name thei
 | DELETE | `/nodes/{id}/links/{link_id}` | revoke a download link |
 | GET | `/s/{token}` (outside `/drawer/v1`) | public attachment download, no instance bearer token needed; 404 when invalid, expired, revoked or trashed |
 | GET | `/search?q=` | names first, then contents with `line` and `snippet` |
+| GET | `/memory/notes?tag=&q=&limit=` | memory notes, newest first, filtered by tag and/or text |
+| GET / PUT | `/memory/note` | `GET ?name=` returns content, tags, links and backlinks; `PUT {"name","content","tags","append"}` saves a note |
+| GET | `/memory/tags` | every tag with its note count |
 | GET | `/recent?limit=` | live files, most recently changed first, with `modified_by` |
 | GET | `/update` | is a newer release published? `{current, latest, update_available}` |
 | POST | `/update` | install the latest release if newer; the server runs the new version after a restart |

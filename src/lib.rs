@@ -19,6 +19,7 @@ pub mod transfers;
 pub mod mcp;
 pub mod service;
 pub mod update;
+pub mod vault;
 
 use std::{path::PathBuf, sync::Arc};
 
