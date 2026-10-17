@@ -513,3 +513,18 @@ async fn search_ranks_names_first_and_reports_lines() {
     let hit = &m.search("needle", 10).await.unwrap()[0];
     assert!(hit.snippet.contains("needle") && hit.snippet.chars().count() < 200, "{}", hit.snippet);
 }
+
+#[tokio::test]
+async fn public_link_can_pin_a_revision() {
+    let (s, _dir) = store().await;
+    let first = s.write("/share.txt", b"original", by("alice", "")).await.unwrap();
+    let fixed = s.create_download_link_with_revision(&first.node.id, "alice", 7, Some(1)).await.unwrap();
+    let latest = s.create_download_link(&first.node.id, "alice", 7).await.unwrap();
+    s.write("/share.txt", b"new", by("alice", "")).await.unwrap();
+    let (_, _, path) = s.download_link_file(&fixed.token).await.unwrap();
+    assert_eq!(tokio::fs::read(path).await.unwrap(), b"original");
+    let (_, _, path) = s.download_link_file(&latest.token).await.unwrap();
+    assert_eq!(tokio::fs::read(path).await.unwrap(), b"new");
+    assert!(s.create_download_link_with_revision(&first.node.id, "alice", 7, Some(999)).await.is_err());
+    assert_eq!(s.list_download_links(&first.node.id, "alice").await.unwrap().len(), 2);
+}

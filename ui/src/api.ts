@@ -59,6 +59,7 @@ export interface SearchHit {
 }
 
 export interface DownloadLink {
+  revision: number | null;
   id: string;
   created_at: string;
   expires_at: string;
@@ -342,8 +343,8 @@ export const api = {
     const r = await check(await fetch(`${BASE}/nodes/${encodeURIComponent(id)}/links`, { headers: headers() }));
     return (await r.json()).links;
   },
-  async createLink(id: string, days = 7): Promise<CreatedDownloadLink> {
-    const r = await check(await fetch(`${BASE}/nodes/${encodeURIComponent(id)}/links`, json("POST", { expires_in_days: days })));
+  async createLink(id: string, days = 7, revision?: number): Promise<CreatedDownloadLink> {
+    const r = await check(await fetch(`${BASE}/nodes/${encodeURIComponent(id)}/links`, json("POST", { expires_in_days: days, revision })));
     return r.json();
   },
   async revokeLink(id: string, linkId: string): Promise<void> {

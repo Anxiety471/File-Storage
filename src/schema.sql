@@ -64,3 +64,9 @@ CREATE TABLE IF NOT EXISTS transfers (
     expires_at       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS transfers_expiry ON transfers(expires_at);
+
+-- Optional fixed revision for a public link; absence means follow the latest head.
+CREATE TABLE IF NOT EXISTS download_link_revisions (
+    link_id TEXT PRIMARY KEY REFERENCES download_links(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL CHECK (revision > 0)
+);

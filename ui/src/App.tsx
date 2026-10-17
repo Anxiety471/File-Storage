@@ -1493,6 +1493,7 @@ function ShareLinksDialog({
   close: () => void;
   notify: (message: string, tone?: "ok" | "error") => void;
 }) {
+  const [pinRevision, setPinRevision] = useState(false);
   const [links, setLinks] = useState<DownloadLink[]>([]);
   const [newUrl, setNewUrl] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1520,7 +1521,7 @@ function ShareLinksDialog({
   };
 
   const create = () => perform(async () => {
-    const link = await api.createLink(node.id);
+    const link = await api.createLink(node.id, 7, pinRevision ? node.head_revision ?? undefined : undefined);
     setNewUrl(`${window.location.origin}/s/${link.token}`);
     setLinks(await api.links(node.id));
     notify("Link created. Copy it now; Drawer will not display this secret again.");
@@ -1548,8 +1549,9 @@ function ShareLinksDialog({
         <h3 id="share-title">Share “{node.name}”</h3>
         <p className="muted small">
           Anyone with the link can download this file for 7 days without your Drawer access token.
-          Links always serve the latest version. Revoke a link to disable it immediately.
+          Choose whether the link follows the latest version or stays on the current revision. Revoke it to disable access.
         </p>
+        <label><span><input type="checkbox" checked={pinRevision} onChange={(e) => setPinRevision(e.target.checked)} /> Keep this link on revision {node.head_revision}</span></label>
         <div className="modal-actions">
           <button type="button" className="btn primary" disabled={busy || loading} onClick={create}>
             Create 7-day link
@@ -1570,7 +1572,7 @@ function ShareLinksDialog({
             {links.map((link) => (
               <li key={link.id}>
                 <span className="muted small">
-                  {new Date(link.expires_at).getTime() < Date.now() ? "Expired" : "Expires"}: {new Date(link.expires_at).toLocaleString()}
+                  {link.revision ? `Revision ${link.revision} · ` : "Latest version · "}{new Date(link.expires_at).getTime() < Date.now() ? "Expired" : "Expires"}: {new Date(link.expires_at).toLocaleString()}
                 </span>
                 <button type="button" className="btn danger" disabled={busy} onClick={() => revoke(link.id)}>Revoke</button>
               </li>

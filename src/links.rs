@@ -13,6 +13,7 @@ pub struct DownloadLink {
     pub id: String,
     pub created_at: String,
     pub expires_at: String,
+    pub revision: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -22,12 +23,17 @@ pub struct NewDownloadLink {
     pub token: String,
     pub created_at: String,
     pub expires_at: String,
+    pub revision: Option<i64>,
 }
 
 impl Drawer {
     /// Only files can be linked. A link grants read-only access to the latest revision,
     /// and cannot be used to browse other files or invoke the authenticated API.
     pub async fn create_download_link(&self, id: &str, actor: &str, days: i64) -> Result<NewDownloadLink> {
+        self.create_download_link_with_revision(id, actor, days, None).await
+    }
+
+    pub async fn create_download_link_with_revision(&self, id: &str, actor: &str, days: i64, revision: Option<i64>) -> Result<NewDownloadLink> {
         if !(1..=30).contains(&days) {
             return Err(Error::Invalid("link expiry must be between 1 and 30 days".into()));
         }
@@ -37,35 +43,45 @@ impl Drawer {
             return Err(Error::NotFound("live file".into()));
         }
         self.authorize(id, actor, OWNER).await?;
+        if let Some(revision) = revision {
+            self.read_file_path(Ref::Id(id), Some(revision)).await?;
+        }
+
         // Two independent UUIDv4 values provide roughly 244 bits of unpredictable entropy.
         let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let token_hash = hex::encode(Sha256::digest(token.as_bytes()));
         let link_id = Uuid::new_v4().to_string();
         let created_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
         let expires_at = (Utc::now() + Duration::days(days)).to_rfc3339_opts(SecondsFormat::Millis, true);
+        let mut tx = self.pool.begin().await?;
         sqlx::query("INSERT INTO download_links (id, node_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?)")
             .bind(&link_id)
             .bind(id)
             .bind(token_hash)
             .bind(&created_at)
             .bind(&expires_at)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
-        Ok(NewDownloadLink { id: link_id, token, created_at, expires_at })
+        if let Some(revision) = revision {
+            sqlx::query("INSERT INTO download_link_revisions (link_id, revision) VALUES (?, ?)")
+                .bind(&link_id).bind(revision).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        Ok(NewDownloadLink { id: link_id, token, created_at, expires_at, revision })
     }
 
     pub async fn list_download_links(&self, id: &str, actor: &str) -> Result<Vec<DownloadLink>> {
         self.stat(Ref::Id(id)).await?;
         self.authorize(id, actor, OWNER).await?;
         let rows = sqlx::query(
-            "SELECT id, created_at, expires_at FROM download_links WHERE node_id = ? ORDER BY created_at DESC",
+            "SELECT d.id, d.created_at, d.expires_at, p.revision FROM download_links d LEFT JOIN download_link_revisions p ON p.link_id = d.id WHERE d.node_id = ? ORDER BY d.created_at DESC",
         )
         .bind(id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
-            .map(|r| DownloadLink { id: r.get("id"), created_at: r.get("created_at"), expires_at: r.get("expires_at") })
+            .map(|r| DownloadLink { id: r.get("id"), created_at: r.get("created_at"), expires_at: r.get("expires_at"), revision: r.get("revision") })
             .collect())
     }
 
@@ -93,7 +109,7 @@ impl Drawer {
         }
         let _guard = self.write_lock.lock().await;
         let hash = hex::encode(Sha256::digest(token.as_bytes()));
-        let row = sqlx::query("SELECT node_id FROM download_links WHERE token_hash = ? AND expires_at > ?")
+        let row = sqlx::query("SELECT d.node_id, p.revision FROM download_links d LEFT JOIN download_link_revisions p ON p.link_id = d.id WHERE d.token_hash = ? AND d.expires_at > ?")
             .bind(hash)
             .bind(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true))
             .fetch_optional(&self.pool)
@@ -109,7 +125,8 @@ impl Drawer {
         if live.id != id {
             return Err(Error::NotFound("download link".into()));
         }
-        let (rev, file_path) = self.read_file_path(Ref::Id(&id), None).await?;
+        let revision: Option<i64> = row.get("revision");
+        let (rev, file_path) = self.read_file_path(Ref::Id(&id), revision).await?;
         Ok((node.name, rev.size, file_path))
     }
 }
