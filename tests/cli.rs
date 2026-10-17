@@ -351,3 +351,102 @@ fn update_check_reports_an_unreachable_release_host_without_touching_the_store()
     assert!(err.contains("cannot reach"), "{err}");
     assert!(!data.exists(), "update must not create a store");
 }
+
+/// Isolate home and working directory without changing this test process's environment.
+fn standalone(home: &Path, cwd: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_drawer"));
+    command.env("HOME", home).env("USERPROFILE", home)
+        .env_remove("DRAWER_DATA_DIR").current_dir(cwd)
+        .args(["--author", "tester"]).args(args);
+    command
+}
+
+#[test]
+fn default_store_is_shared_across_working_directories() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home with spaces");
+    let first = tmp.path().join("first");
+    let second = tmp.path().join("second");
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&second).unwrap();
+    // An old working-directory store is never silently moved or deleted.
+    std::fs::create_dir(first.join("data")).unwrap();
+    std::fs::write(first.join("data/keep.txt"), "legacy data").unwrap();
+    let file = local(tmp.path(), "note.txt", b"same home store\n");
+    ok(standalone(&home, &first, &["put", file.to_str().unwrap(), "/note.txt"]).output().unwrap());
+    assert_eq!(ok(standalone(&home, &second, &["cat", "/note.txt"]).output().unwrap()), "same home store\n");
+    assert!(home.join(".drawer/drawer.db").is_file());
+    assert!(home.join(".drawer/blobs").is_dir());
+    assert_eq!(std::fs::read_to_string(first.join("data/keep.txt")).unwrap(), "legacy data");
+    assert!(!first.join("data/drawer.db").exists());
+    assert!(!first.join(".drawer").exists());
+    assert!(!second.join("data").exists());
+    assert!(!second.join(".drawer").exists());
+}
+
+#[test]
+fn explicit_store_overrides_environment_and_home_default() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let from_env = tmp.path().join("env-store");
+    let from_flag = tmp.path().join("flag-store");
+    ok(standalone(&home, tmp.path(), &["mkdir", "/environment"])
+        .env("DRAWER_DATA_DIR", &from_env).output().unwrap());
+    ok(standalone(&home, tmp.path(), &["--data-dir", from_flag.to_str().unwrap(), "mkdir", "/flag"])
+        .env("DRAWER_DATA_DIR", &from_env).output().unwrap());
+    assert!(from_env.join("drawer.db").is_file());
+    assert!(from_flag.join("drawer.db").is_file());
+    assert_eq!(ok(drawer(&from_env, &["ls"])), "environment/\n");
+    assert_eq!(ok(drawer(&from_flag, &["ls"])), "flag/\n");
+    assert!(!home.exists());
+}
+
+#[test]
+fn mcp_config_uses_home_store_without_creating_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let config = ok(standalone(&home, tmp.path(), &["mcp-config"]).output().unwrap());
+    let value: serde_json::Value = serde_json::from_str(&config).unwrap();
+    let args = &value["mcpServers"]["drawer"]["args"];
+    assert_eq!(args[0], "--data-dir");
+    assert_eq!(args[1], home.join(".drawer").to_str().unwrap());
+    assert_eq!(args[2], "stdio");
+    assert!(!home.exists());
+}
+
+#[test]
+fn reading_missing_default_store_does_not_create_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let error = fail(standalone(&home, tmp.path(), &["ls"]).output().unwrap());
+    assert!(error.contains("no store at"), "{error}");
+    assert!(error.contains(&home.join(".drawer").display().to_string()), "{error}");
+    assert!(!home.exists());
+}
+
+#[test]
+fn missing_home_requires_explicit_store_but_not_help_or_completions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let without_home = |args: &[&str]| {
+        let mut command = standalone(tmp.path(), tmp.path(), args);
+        command.env_remove("HOME").env_remove("USERPROFILE");
+        command
+    };
+    let error = fail(without_home(&["ls"]).output().unwrap());
+    assert!(error.contains("cannot determine home directory"), "{error}");
+    ok(without_home(&["--help"]).output().unwrap());
+    ok(without_home(&["completions", "bash"]).output().unwrap());
+    let store = tmp.path().join("explicit-store");
+    ok(without_home(&["--data-dir", store.to_str().unwrap(), "mkdir", "/works"]).output().unwrap());
+    assert!(store.join("drawer.db").is_file());
+    assert!(!tmp.path().join(".drawer").exists());
+}
+
+#[test]
+fn userprofile_is_used_when_home_is_empty() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("profile");
+    ok(standalone(&home, tmp.path(), &["mkdir", "/works"]).env("HOME", "").output().unwrap());
+    assert!(home.join(".drawer/drawer.db").is_file());
+    assert!(!tmp.path().join(".drawer").exists());
+}
