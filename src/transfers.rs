@@ -16,6 +16,7 @@ use crate::{error::{Error, Result}, service::{Drawer, WriteOpts, normalize}};
 
 const MAX_TRANSFER_BYTES: i64 = 4 * 1024 * 1024 * 1024;
 const MAX_CHUNK_BYTES: usize = 8 * 1024 * 1024;
+const MAX_BATCH_FILES: usize = 100;
 
 #[derive(Deserialize)]
 pub struct NewTransfer {
@@ -61,7 +62,7 @@ fn info(r: &sqlx::sqlite::SqliteRow) -> TransferInfo {
         size: r.get("size"), received: r.get("received"), expires_at: r.get("expires_at"), sha256: r.get("sha256"),
     }
 }
-pub async fn start(State(s): State<Drawer>, headers: HeaderMap, Json(b): Json<NewTransfer>) -> Result<Json<Value>> {
+fn validate(b: &NewTransfer) -> Result<String> {
     let norm = normalize(&b.path)?;
     if norm == "/" || !(0..=MAX_TRANSFER_BYTES).contains(&b.size) {
         return Err(Error::Invalid("transfer must be a non-root file up to 4 GiB".into()));
@@ -70,23 +71,86 @@ pub async fn start(State(s): State<Drawer>, headers: HeaderMap, Json(b): Json<Ne
         && (expected.len() != 64 || !expected.bytes().all(|v| v.is_ascii_hexdigit())) {
             return Err(Error::Invalid("sha256 must contain 64 hexadecimal characters".into()));
     }
-    let _lock = s.transfer_lock.lock().await;
-    let reserved: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(size),0) FROM transfers WHERE expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now')").fetch_one(&s.pool).await?;
-    s.check_quota(reserved.saturating_add(b.size)).await?;
+    Ok(norm)
+}
+/// Caller holds `transfer_lock` and has already checked quota for the whole request.
+async fn insert(s: &Drawer, who: &str, norm: &str, b: &NewTransfer) -> Result<Value> {
     let id = Uuid::new_v4().to_string();
     let expires = (Utc::now() + Duration::days(2)).to_rfc3339_opts(SecondsFormat::Millis, true);
     tokio::fs::create_dir_all(&s.transfer_dir).await?;
-    tokio::fs::File::create(partial_path(&s, &id)).await?;
+    tokio::fs::File::create(partial_path(s, &id)).await?;
     let result = sqlx::query(
         "INSERT INTO transfers (id, path, size, received, actor, sha256, if_head_revision, expires_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?)",
-    ).bind(&id).bind(&norm).bind(b.size).bind(actor(&headers))
-        .bind(b.sha256.map(|x| x.to_lowercase())).bind(b.if_head_revision).bind(&expires)
+    ).bind(&id).bind(norm).bind(b.size).bind(who)
+        .bind(b.sha256.as_ref().map(|x| x.to_lowercase())).bind(b.if_head_revision).bind(&expires)
         .execute(&s.pool).await;
     if let Err(e) = result {
-        let _ = tokio::fs::remove_file(partial_path(&s, &id)).await;
+        let _ = tokio::fs::remove_file(partial_path(s, &id)).await;
         return Err(e.into());
     }
-    Ok(Json(json!({"id":id, "path":norm, "size":b.size, "received":0, "expires_at":expires})))
+    Ok(json!({"id":id, "path":norm, "size":b.size, "received":0, "expires_at":expires}))
+}
+async fn reserved(s: &Drawer) -> Result<i64> {
+    Ok(sqlx::query_scalar("SELECT COALESCE(SUM(size),0) FROM transfers WHERE expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now')").fetch_one(&s.pool).await?)
+}
+pub async fn start(State(s): State<Drawer>, headers: HeaderMap, Json(b): Json<NewTransfer>) -> Result<Json<Value>> {
+    let norm = validate(&b)?;
+    let _lock = s.transfer_lock.lock().await;
+    s.check_quota(reserved(&s).await?.saturating_add(b.size)).await?;
+    Ok(Json(insert(&s, &actor(&headers), &norm, &b).await?))
+}
+#[derive(Deserialize)]
+pub struct BatchStart { files: Vec<NewTransfer> }
+/// Starts one transfer per file, all or nothing: any invalid entry, duplicate path or quota
+/// shortfall rejects the whole batch before anything is staged.
+pub async fn start_batch(State(s): State<Drawer>, headers: HeaderMap, Json(b): Json<BatchStart>) -> Result<Json<Value>> {
+    if b.files.is_empty() || b.files.len() > MAX_BATCH_FILES {
+        return Err(Error::Invalid(format!("batch must contain 1 to {MAX_BATCH_FILES} files")));
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut norms = Vec::with_capacity(b.files.len());
+    let mut total = 0i64;
+    for file in &b.files {
+        let norm = validate(file).map_err(|e| Error::Invalid(format!("{}: {e}", file.path)))?;
+        if !seen.insert(norm.clone()) { return Err(Error::Invalid(format!("duplicate path in batch: {norm}"))); }
+        total = total.saturating_add(file.size);
+        norms.push(norm);
+    }
+    let who = actor(&headers);
+    let _lock = s.transfer_lock.lock().await;
+    s.check_quota(reserved(&s).await?.saturating_add(total)).await?;
+    let mut started = Vec::with_capacity(b.files.len());
+    for (file, norm) in b.files.iter().zip(&norms) {
+        match insert(&s, &who, norm, file).await {
+            Ok(v) => started.push(v),
+            Err(error) => {
+                for v in &started {
+                    let id = v["id"].as_str().unwrap_or_default();
+                    let _ = sqlx::query("DELETE FROM transfers WHERE id = ?").bind(id).execute(&s.pool).await;
+                    let _ = tokio::fs::remove_file(partial_path(&s, id)).await;
+                }
+                return Err(error);
+            }
+        }
+    }
+    Ok(Json(json!({ "transfers": started })))
+}
+#[derive(Deserialize)]
+pub struct BatchComplete { ids: Vec<String> }
+/// Completes each transfer independently and reports a status per id, so one failed file
+/// does not hide the files that were saved.
+pub async fn complete_batch(State(s): State<Drawer>, headers: HeaderMap, Json(b): Json<BatchComplete>) -> Result<Json<Value>> {
+    if b.ids.is_empty() || b.ids.len() > MAX_BATCH_FILES {
+        return Err(Error::Invalid(format!("batch must contain 1 to {MAX_BATCH_FILES} transfers")));
+    }
+    let mut results = Vec::with_capacity(b.ids.len());
+    for id in b.ids {
+        match complete(State(s.clone()), UrlPath(id.clone()), headers.clone()).await {
+            Ok(Json(saved)) => results.push(json!({"id":id, "ok":true, "file":saved})),
+            Err(error) => results.push(json!({"id":id, "ok":false, "error":error.to_string()})),
+        }
+    }
+    Ok(Json(json!({ "results": results })))
 }
 pub async fn status(
     State(s): State<Drawer>, UrlPath(id): UrlPath<String>, headers: HeaderMap,

@@ -198,6 +198,11 @@ Base path `/drawer/v1`. Nodes are named by `path=` or `id=`. Mutations name thei
 | GET | `/files?path=` or `?id=` | raw bytes; `&revision=N`; `&download=true` for an attachment. Response carries `x-drawer-revision`, `x-drawer-prop-*` and an `ETag`; `If-None-Match` gets a 304 |
 | PUT | `/files?path=` | raw body; `x-drawer-comment`, `x-drawer-prop-<key>`, `&if_head_revision=N` |
 | DELETE | `/files?path=` or `?id=` | trash a file (`&if_head_revision=N` optional) |
+| POST | `/transfers` | start one resumable upload: `{path, size, sha256?, if_head_revision?}` |
+| POST | `/transfers/batch` | start up to 100 uploads at once: `{files:[{path, size, sha256?, if_head_revision?}]}`. All or nothing: any invalid or duplicate path, or a quota shortfall for the combined size, rejects the batch. Returns `{transfers:[...]}` in order |
+| PUT | `/transfers/{id}` | append a chunk (1 to 8 MiB) at `x-upload-offset` |
+| POST | `/transfers/{id}/complete` | save the staged file as a new revision |
+| POST | `/transfers/batch/complete` | complete many: `{ids:[...]}`. Each id succeeds or fails independently; returns `{results:[{id, ok, file?|error?}]}` |
 | GET | `/files/meta?path=` or `?id=` | id, head revision, size, mime, starred, trashed, properties |
 | POST | `/edit` | `{"path","old_string","new_string","replace_all","author","comment","if_head_revision"}`: exact-text replace as one revision |
 | GET | `/revisions?path=` or `?id=` | revision history, newest first |
