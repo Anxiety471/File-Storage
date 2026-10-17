@@ -709,10 +709,10 @@ export function App() {
           {navItem("recent", "clock", "Recent")}
           {navItem("starred", "star", "Starred")}
           {navItem("trash", "trash", "Trash")}
-          {currentUser === "admin" && <button type="button" className="nav" onClick={() => setUsersManager(true)}><Icon name="folder" /><span className="nav-label">Users and quotas</span></button>}
-          <button type="button" className="nav" onClick={() => setActivityManager(true)}><Icon name="clock" /><span className="nav-label">Activity history</span></button>
-          {(currentUser === "admin" || currentUser === null) && <button type="button" className="nav" onClick={() => setMountManager(true)}><Icon name="folder" /><span className="nav-label">Host folders</span></button>}
-          <button type="button" className="nav" onClick={() => setStorageManager(true)}><Icon name="folder" /><span className="nav-label">Storage</span></button>
+          {currentUser === "admin" && <button type="button" className="nav" title="Users and quotas" aria-label="Users and quotas" onClick={() => setUsersManager(true)}><Icon name="folder" /><span className="nav-label">Users and quotas</span></button>}
+          <button type="button" className="nav" title="Activity history" aria-label="Activity history" onClick={() => setActivityManager(true)}><Icon name="clock" /><span className="nav-label">Activity history</span></button>
+          {(currentUser === "admin" || currentUser === null) && <button type="button" className="nav" title="Host folders" aria-label="Host folders" onClick={() => setMountManager(true)}><Icon name="folder" /><span className="nav-label">Host folders</span></button>}
+          <button type="button" className="nav" title="Storage" aria-label="Storage" onClick={() => setStorageManager(true)}><Icon name="folder" /><span className="nav-label">Storage</span></button>
           <button type="button" className="nav" title="Transfers" onClick={() => setTransferManager(true)}><Icon name="upload" /><span className="nav-label">Transfers</span></button>
         </nav>
 
