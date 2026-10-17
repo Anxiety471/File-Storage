@@ -402,6 +402,15 @@ pub async fn save(svc: &Drawer, name: &str, content: &str, tags: &[String], appe
     Ok(json!({ "path": path, "name": stem(&path), "revision": out.revision, "tags": parsed.tags, "links": parsed.links, "created": existing.is_none() }))
 }
 
+/// Move a note to the trash. Drawer's trash is reversible, so the note and its history can be
+/// restored; links to it become unresolved until it is written again.
+pub async fn forget(svc: &Drawer, name: &str, actor: &str) -> Result<Value> {
+    let notes = load(svc).await?;
+    let n = resolve(&notes, name).ok_or_else(|| Error::NotFound(format!("memory note {name}")))?;
+    let out = svc.trash(Ref::Id(&n.id), None, actor).await?;
+    Ok(json!({ "path": n.path, "name": stem(&n.path), "trashed": out.trashed, "id": n.id }))
+}
+
 // ----- REST ----------------------------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -432,6 +441,11 @@ pub struct SaveBody {
     tags: Vec<String>,
     #[serde(default)]
     append: bool,
+}
+
+pub async fn delete_note(State(s): State<Drawer>, headers: HeaderMap, Query(q): Query<NameQ>) -> Result<Json<Value>> {
+    let actor = headers.get("x-drawer-author").and_then(|v| v.to_str().ok()).filter(|v| !v.is_empty()).unwrap_or("api");
+    Ok(Json(forget(&s, &q.name, actor).await?))
 }
 
 pub async fn save_note(State(s): State<Drawer>, headers: HeaderMap, Json(b): Json<SaveBody>) -> Result<Json<Value>> {

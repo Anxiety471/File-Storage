@@ -66,6 +66,8 @@ pub enum MemoryAction {
     },
     /// Print a note with its links and backlinks.
     Read { name: String },
+    /// Delete a note (moves it to the trash; `drawer restore` brings it back).
+    Forget { name: String },
     /// List tags with how many notes use each.
     Tags,
 }
@@ -942,6 +944,13 @@ async fn memory(svc: &Drawer, action: MemoryAction, actor: &str, json: bool) -> 
             if !d.backlinks.is_empty() {
                 println!("\nbacklinks: {}", d.backlinks.iter().map(|b| format!("[[{}]]", b.name)).collect::<Vec<_>>().join(" "));
             }
+        }
+        MemoryAction::Forget { name } => {
+            let out = vault::forget(svc, &name, actor).await?;
+            if json {
+                return emit_json(&out);
+            }
+            println!("trashed {} (restore with: drawer restore {})", out["path"].as_str().unwrap_or_default(), out["id"].as_str().unwrap_or_default());
         }
         MemoryAction::Tags => {
             let tags = vault::tags(svc).await?;

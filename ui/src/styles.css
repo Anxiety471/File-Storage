@@ -402,3 +402,7 @@ button.nav { border: 0; background: none; font: inherit; cursor: pointer; text-a
 .memory-key { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
 .memory-key i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 .memory-graph canvas { height: 440px; }
+.memory-form { display: flex; flex-direction: column; gap: 12px; }
+.memory-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.memory-form input, .memory-form textarea { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: inherit; }
+.memory-form textarea { font-family: ui-monospace, monospace; resize: vertical; }

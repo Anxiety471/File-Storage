@@ -159,7 +159,7 @@ mcp_servers:
 | `opencode` | JSON for `opencode.json` |
 | `json` | an `mcpServers` block for Claude Desktop, Cursor, Windsurf and most others |
 
-The server exposes 26 tools:
+The server exposes 27 tools:
 
 | Tools | |
 | --- | --- |
@@ -168,7 +168,7 @@ The server exposes 26 tools:
 | `drawer_revisions`, `drawer_diff`, `drawer_rollback`, `drawer_copy`, `drawer_move` | history and layout |
 | `drawer_delete`, `drawer_trash`, `drawer_restore`, `drawer_purge` | trash lifecycle |
 | `drawer_star`, `drawer_share`, `drawer_unshare` | stars and grants |
-| `memory_remember`, `memory_recall`, `memory_read`, `memory_tags`, `memory_graph` | [AI memory vault](#ai-memory-vault) |
+| `memory_remember`, `memory_recall`, `memory_read`, `memory_forget`, `memory_tags`, `memory_graph` | [AI memory vault](#ai-memory-vault) |
 
 Built for how agents work:
 
@@ -203,8 +203,11 @@ drawer memory remember "Project Drawer" "Rust file server. Owner: [[people/Alice
 echo "Prefers tabs" | drawer memory remember Preferences -t style --append
 drawer memory recall "file server"      # or: drawer memory recall --tag project
 drawer memory read "Project Drawer"     # content, links and backlinks
+drawer memory forget "Old note"      # to the trash; `drawer restore <id>` undoes it
 drawer memory tags
 ```
+
+**Managing memories.** The Memories panel is full create, read, update and delete: **+ New memory** (or click a dashed graph node to write a note that is linked but missing), **Edit** and **Delete** on an open note. Delete moves the note to the trash, so it can be restored.
 
 **Browsing memories.** The web UI has a **Memories** entry in the sidebar. Its **Graph** view is Obsidian's graph view: every note is a node, every `[[link]]` an edge, colour follows the first tag, size follows how connected a note is, and dashed nodes are notes that are linked but not written yet. Drag, zoom, filter by name or `#tag`, and click a node to open the note. **List** view has search and tag chips; opened notes render with clickable `[[links]]` and a "Linked from" list. The graph is also `GET /drawer/v1/memory/graph` and the `memory_graph` MCP tool. Or open the same files in the normal file browser under `/memory`.
 
@@ -241,7 +244,7 @@ Base path `/drawer/v1`. Nodes are named by `path=` or `id=`. Mutations name thei
 | GET | `/s/{token}` (outside `/drawer/v1`) | public attachment download, no instance bearer token needed; 404 when invalid, expired, revoked or trashed |
 | GET | `/search?q=` | names first, then contents with `line` and `snippet` |
 | GET | `/memory/notes?tag=&q=&limit=` | memory notes, newest first, filtered by tag and/or text |
-| GET / PUT | `/memory/note` | `GET ?name=` returns content, tags, links and backlinks; `PUT {"name","content","tags","append"}` saves a note |
+| GET / PUT / DELETE | `/memory/note` | `GET ?name=` returns content, tags, links and backlinks; `PUT {"name","content","tags","append"}` creates, replaces or appends; `DELETE ?name=` moves the note to the trash |
 | GET | `/memory/tags` | every tag with its note count |
 | GET | `/memory/graph` | link graph: `nodes` (note, tags, in/out counts; no `path` for unwritten notes) and `edges` |
 | GET | `/recent?limit=` | live files, most recently changed first, with `modified_by` |

@@ -915,6 +915,14 @@ async fn memory_vault_links_tags_and_mcp() -> anyhow::Result<()> {
     let g = json_of(send(&app, get("/drawer/v1/memory/graph")).await).await;
     assert!(g["nodes"].as_array().unwrap().iter().any(|n| n["name"] == "Missing Note" && n["path"].is_null()));
 
+    // Delete trashes the note; links to it become unresolved.
+    let del = Request::delete("/drawer/v1/memory/note?name=people/Alice").body(Body::empty()).unwrap();
+    let r = send(&app, del).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(send(&app, get("/drawer/v1/memory/note?name=Alice")).await.status(), StatusCode::NOT_FOUND);
+    let note = json_of(send(&app, get("/drawer/v1/memory/note?name=Drawer")).await).await;
+    assert!(note["links"][0]["path"].is_null());
+
     // The same vault over MCP.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
@@ -929,6 +937,10 @@ async fn memory_vault_links_tags_and_mcp() -> anyhow::Result<()> {
     assert!(format!("{:?}", r.content).contains("Prefs"));
     let r = client.call_tool(CallToolRequestParams::new("memory_read").with_arguments(args(json!({"name":"Prefs"})))).await?;
     assert!(format!("{:?}", r.content).contains("Likes tabs"));
+    let r = client.call_tool(CallToolRequestParams::new("memory_forget").with_arguments(args(json!({"name":"Prefs"})))).await?;
+    assert_ne!(r.is_error, Some(true));
+    let r = client.call_tool(CallToolRequestParams::new("memory_read").with_arguments(args(json!({"name":"Prefs"})))).await?;
+    assert_eq!(r.is_error, Some(true));
     client.cancel().await?;
     server.abort();
     Ok(())

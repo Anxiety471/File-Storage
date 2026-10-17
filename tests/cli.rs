@@ -488,4 +488,6 @@ fn memory_commands_save_recall_and_read() {
     assert!(ok(drawer(data, &["memory", "read", "drawer"])).contains("backlinks: [[Alice]]"));
     assert!(ok(drawer(data, &["memory", "tags"])).contains("#infra  1"));
     assert!(fail(drawer(data, &["memory", "read", "nope"])).contains("not found"));
+    assert!(ok(drawer(data, &["memory", "forget", "Alice"])).starts_with("trashed /memory/people/Alice.md"));
+    assert!(fail(drawer(data, &["memory", "read", "Alice"])).contains("not found"));
 }

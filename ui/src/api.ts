@@ -165,6 +165,8 @@ export interface GraphNode { id: string; name: string; path?: string; tags: stri
 export interface MemoryGraph { nodes: GraphNode[]; edges: [string, string][] }
 
 export const api = {
+  async forgetMemory(name: string): Promise<void> { await check(await fetch(`${BASE}/memory/note?name=${encodeURIComponent(name)}`, { method: "DELETE", headers: headers() })); },
+  async saveMemory(name: string, content: string, tags: string[], append = false): Promise<{ path: string; created: boolean }> { return (await check(await fetch(`${BASE}/memory/note`, json("PUT", { name, content, tags, append })))).json(); },
   async memoryGraph(): Promise<MemoryGraph> { return (await check(await fetch(`${BASE}/memory/graph`, { headers: headers() }))).json(); },
   async memoryNotes(q: string, tag: string): Promise<MemoryNote[]> { const p = new URLSearchParams({ limit: "200" }); if (q) p.set("q", q); if (tag) p.set("tag", tag); return (await check(await fetch(`${BASE}/memory/notes?${p}`, { headers: headers() }))).json().then((r: { notes: MemoryNote[] }) => r.notes); },
   async memoryNote(name: string): Promise<MemoryDetail> { return (await check(await fetch(`${BASE}/memory/note?name=${encodeURIComponent(name)}`, { headers: headers() }))).json(); },

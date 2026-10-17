@@ -7,7 +7,7 @@ const PALETTE = ["#4f7cff", "#e8590c", "#2f9e44", "#ae3ec9", "#f08c00", "#1098ad
 const colorOf = (tags: string[], first: string[]) => { const i = first.indexOf(tags[0]?.split("/")[0]); return i < 0 ? "#868e96" : PALETTE[i % PALETTE.length]; };
 
 /** Obsidian-style graph: notes are nodes, [[links]] are edges. Drag nodes, scroll to zoom, drag the background to pan. */
-export function MemoryGraph({ open, filter }: { open: (name: string) => void; filter: string }) {
+export function MemoryGraph({ open, filter }: { open: (name: string, exists: boolean) => void; filter: string }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const [graph, setGraph] = useState<Graph | null>(null);
   const [error, setError] = useState("");
@@ -91,7 +91,7 @@ export function MemoryGraph({ open, filter }: { open: (name: string) => void; fi
       else { hover = pick(x, y); el.style.cursor = hover ? "pointer" : "grab"; setHint(hover ? `${hover.name} · ${hover.inbound} in · ${hover.out} out${hover.tags.length ? " · " + hover.tags.map((t) => "#" + t).join(" ") : ""}${hover.path ? "" : " · not written yet"}` : ""); }
       last = [e.clientX, e.clientY];
     };
-    const up = () => { if (drag && !moved && drag.path) open(drag.name); if (drag) drag.fixed = false; drag = null; pan = false; };
+    const up = () => { if (drag && !moved) open(drag.name, !!drag.path); if (drag) drag.fixed = false; drag = null; pan = false; };
     const wheel = (e: WheelEvent) => { touched = true; e.preventDefault(); const b = el.getBoundingClientRect(), k = Math.min(4, Math.max(0.25, view.k * (e.deltaY < 0 ? 1.12 : 1 / 1.12))); const px = e.clientX - b.left, py = e.clientY - b.top; view.x = px - ((px - view.x) / view.k) * k; view.y = py - ((py - view.y) / view.k) * k; view.k = k; };
     el.addEventListener("mousedown", down); window.addEventListener("mousemove", move); window.addEventListener("mouseup", up); el.addEventListener("wheel", wheel, { passive: false });
     return () => { cancelAnimationFrame(raf); el.removeEventListener("mousedown", down); window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); el.removeEventListener("wheel", wheel); };
@@ -101,5 +101,5 @@ export function MemoryGraph({ open, filter }: { open: (name: string) => void; fi
   if (graph && !graph.nodes.length) return <p>No memories yet, so there's nothing to draw. Notes appear here as soon as an agent saves one.</p>;
   return <div className="memory-graph"><canvas ref={canvas} aria-label="Memory graph" />
     {first.length > 0 && <div className="memory-tags">{first.map((t, i) => <span key={t} className="memory-key"><i style={{ background: PALETTE[i % PALETTE.length] }} />#{t}</span>)}</div>}
-    <div className="memory-graph-hint">{hint || "Drag nodes, scroll to zoom, click a note to open it. Colour is the note's first tag; dashed circles are linked notes that don't exist yet."}</div></div>;
+    <div className="memory-graph-hint">{hint || "Drag nodes, scroll to zoom, click a note to open it, or a dashed one to write it. Colour is the note's first tag; dashed circles are linked notes that don't exist yet."}</div></div>;
 }

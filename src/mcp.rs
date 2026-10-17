@@ -333,6 +333,7 @@ fn annotations_for(name: &str) -> (&'static str, ToolAnnotations) {
         "memory_tags" => read("List memory tags"),
         "memory_graph" => read("Memory link graph"),
         "memory_remember" => change("Save memory", false, false),
+        "memory_forget" => change("Delete memory", false, true),
         // gone for good: history included
         "drawer_purge" => change("Delete forever", true, false),
         "drawer_unshare" => change("Remove access", true, true),
@@ -644,6 +645,12 @@ impl DrawerMcp {
         json(out)
     }
 
+    #[tool(description = "Delete a memory note by name. It moves to the trash, so it can be restored with drawer_restore. Links to it stay in other notes as unresolved links.")]
+    async fn memory_forget(&self, Parameters(a): Parameters<NoteArg>, ctx: RequestContext<RoleServer>) -> Result<String, String> {
+        let actor = self.actor(None, &ctx);
+        json(crate::vault::forget(&self.svc, &a.name, &actor).await.map_err(|e| e.to_string())?)
+    }
+
     #[tool(description = "Find memories by text and/or tag, newest first. Returns names, tags and a matching line. Call this before answering questions that earlier notes might cover; read a hit with memory_read.")]
     async fn memory_recall(&self, Parameters(a): Parameters<RecallArg>) -> Result<String, String> {
         json(crate::vault::list(&self.svc, a.tag.as_deref(), a.query.as_deref(), a.limit.unwrap_or(20)).await.map_err(|e| e.to_string())?)
@@ -688,7 +695,7 @@ merge. drawer_recent shows what changed lately, and drawer_list with depth > 1 s
 tree. Binary files (PDF, Office, images) travel as base64 with encoding \"base64\". Deleting \
 moves to the trash; drawer_purge is the only permanent delete. Long-term memory lives in the \
 /memory folder as an Obsidian-style vault of Markdown notes: memory_recall searches it by text or \
-tag, memory_read opens a note with its links and backlinks, and memory_remember saves one. Link \
+tag, memory_read opens a note with its links and backlinks, and memory_remember saves one, memory_forget deletes one (to the trash). Link \
 related notes with [[Note Name]] and tag with #tag.";
 
 #[tool_handler(router = self.tool_router)]

@@ -206,7 +206,7 @@ pub fn router() -> Router<Drawer> {
         .route("/starred", get(starred))
         .route("/search", get(search))
         .route("/memory/notes", get(crate::vault::list_notes))
-        .route("/memory/note", get(crate::vault::read_note).put(crate::vault::save_note))
+        .route("/memory/note", get(crate::vault::read_note).put(crate::vault::save_note).delete(crate::vault::delete_note))
         .route("/memory/tags", get(crate::vault::list_tags))
         .route("/memory/graph", get(crate::vault::read_graph))
 }
