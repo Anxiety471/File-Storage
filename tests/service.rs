@@ -589,3 +589,26 @@ async fn cleanup_preview_preserves_pins_heads_and_shared_blobs() {
     assert!(reopened.read(Ref::Path("/history"),Some(3)).await.is_err());
     assert!(reopened.stat(Ref::Id(&trash.node.id)).await.is_err());
 }
+
+#[tokio::test]
+async fn cleanup_counts_remaining_rows_when_retention_increases() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Drawer::open(dir.path()).await.unwrap();
+    let first = s.write("/history", b"one", by("api", "")).await.unwrap();
+    let pin = s.create_download_link_with_revision(&first.node.id, "api", 7, Some(1)).await.unwrap();
+    for bytes in [b"two".as_slice(), b"three".as_slice(), b"four".as_slice()] {
+        s.write("/history", bytes, by("api", "")).await.unwrap();
+    }
+    drop(s);
+    let mut policy = drawer::cleanup::CleanupArgs { keep_revisions: 1, trash_days: 30, orphan_days: 1, apply: true };
+    drawer::cleanup::cleanup(dir.path(), &policy).await.unwrap();
+    let s = Drawer::open(dir.path()).await.unwrap();
+    s.revoke_download_link(&first.node.id, &pin.id, "api").await.unwrap();
+    drop(s);
+    // Only revisions 1 and 4 remain. Raising the policy to three must retain both.
+    policy.keep_revisions = 3;
+    let report = drawer::cleanup::cleanup(dir.path(), &policy).await.unwrap();
+    assert_eq!(report.old_revisions, 0);
+    let s = Drawer::open(dir.path()).await.unwrap();
+    assert_eq!(s.read(Ref::Path("/history"), Some(1)).await.unwrap().1, b"one");
+}
