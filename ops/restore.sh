@@ -30,7 +30,7 @@ safety="drawer-before-restore-$stamp.tar.gz"
 # On failure leave the service stopped for inspection. Never start a partially moved store.
 trap 'echo "Restore failed; Drawer remains stopped. Inspect the safety backup and pre-restore directory before starting it." >&2' EXIT
 docker compose run --rm --no-deps --user root --entrypoint sh drawer -c \
-  'tar --exclude="./pre-restore-*" --exclude="./.restore-stage-*" -czf "/backups/$1" -C /data .' sh "$safety"
+  'tar --exclude="./.maintenance.lock" --exclude="./users/*/.maintenance.lock" --exclude="./pre-restore-*" --exclude="./.restore-stage-*" -czf "/backups/$1" -C /data .' sh "$safety"
 ( cd backups && sha256sum "$safety" > "$safety.sha256" )
 snapshot="pre-restore-$stamp"
 stage=".restore-stage-$stamp"
@@ -40,6 +40,8 @@ docker compose run --rm --no-deps --user root --entrypoint sh drawer -c '
   archive=$1; snapshot=$2; stage=$3
   mkdir "/data/$stage"
   tar -xzf "/backups/$archive" -C "/data/$stage"
+  # Old snapshots may contain a process lease; keep the live lock inode.
+  if [ -f "/data/$stage/.maintenance.lock" ]; then unlink "/data/$stage/.maintenance.lock"; fi
   test -f "/data/$stage/drawer.db"
   test -d "/data/$stage/blobs"
   chown -R drawer:drawer "/data/$stage"
