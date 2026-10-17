@@ -196,7 +196,19 @@ Drawer can hold long-term memory for AI agents, designed like an [Obsidian](http
 - **Tags**: `#tag` in the text and `tags: [a, b]` (or a YAML list) in frontmatter. `#project` also matches `#project/drawer`. Code blocks and inline code are ignored.
 - **Derived index.** Links, backlinks and tags are computed from the files on each request, so edits made through any route (UI, REST, `drawer_write`, sync) are reflected at once. This suits vaults of up to a few thousand notes.
 
-Agents use the `memory_*` MCP tools: `memory_recall` (text and/or tag search), `memory_read` (a note with links and backlinks), `memory_remember` (create, replace or `append`) and `memory_tags`. The server's MCP instructions tell clients to use them. The same operations are in the REST API under `/memory`.
+Agents use the `memory_*` MCP tools: `memory_recall` (text and/or tag search), `memory_read` (a note with links and backlinks), `memory_remember` (create, replace or `append`) and `memory_tags`. The server's MCP instructions tell clients to use them. The same operations are in the REST API under `/memory`, and on the command line:
+
+```sh
+drawer memory remember "Project Drawer" "Rust file server. Owner: [[people/Alice]]" -t project
+echo "Prefers tabs" | drawer memory remember Preferences -t style --append
+drawer memory recall "file server"      # or: drawer memory recall --tag project
+drawer memory read "Project Drawer"     # content, links and backlinks
+drawer memory tags
+```
+
+**Browsing memories.** The web UI has a **Memories** entry in the sidebar: search, tag chips, rendered notes with clickable `[[links]]` and a "Linked from" list. Or open the same files in the normal file browser under `/memory`.
+
+**How an AI saves memories.** Connect it over MCP (see above); the server's instructions tell it to call `memory_recall` before answering and `memory_remember` to save durable facts. Agents without MCP can `PUT /drawer/v1/memory/note` or run `drawer memory remember`.
 
 ## REST API
 

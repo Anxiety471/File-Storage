@@ -44,6 +44,33 @@ pub struct Cli {
 }
 
 #[derive(Subcommand)]
+pub enum MemoryAction {
+    /// Save a note. Content comes from the argument, or from stdin when omitted.
+    Remember {
+        name: String,
+        content: Option<String>,
+        /// Tag to attach; repeat for several.
+        #[arg(short, long)]
+        tag: Vec<String>,
+        /// Add to the end of an existing note instead of replacing it.
+        #[arg(short, long)]
+        append: bool,
+    },
+    /// Find notes by text and/or tag, newest first.
+    Recall {
+        query: Option<String>,
+        #[arg(short, long)]
+        tag: Option<String>,
+        #[arg(short, long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Print a note with its links and backlinks.
+    Read { name: String },
+    /// List tags with how many notes use each.
+    Tags,
+}
+
+#[derive(Subcommand)]
 pub enum Cmd {
     /// Serve the web UI, REST API (/drawer/v1) and MCP (/mcp) over HTTP. The default.
     Serve(ServeArgs),
@@ -159,6 +186,8 @@ pub enum Cmd {
         #[arg(short, long, default_value_t = 20)]
         limit: usize,
     },
+    /// Read and write the AI memory vault (Markdown notes in /memory).
+    Memory { #[command(subcommand)] action: MemoryAction },
     /// Star a file or folder.
     Star { path: String },
     /// Remove a star.
@@ -331,7 +360,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
     }
     // Only these start a store. Everything else needs one already there, so a typo in
     // --data-dir fails loudly instead of quietly creating an empty store.
-    let creates = matches!(cmd, Cmd::Serve(_) | Cmd::Stdio | Cmd::Put(_) | Cmd::Mkdir { .. });
+    let creates = matches!(cmd, Cmd::Serve(_) | Cmd::Stdio | Cmd::Put(_) | Cmd::Mkdir { .. } | Cmd::Memory { action: MemoryAction::Remember { .. } });
     if !creates && !data_dir.join(DB_FILE).exists() {
         bail!(
             "no store at {}; set --data-dir or DRAWER_DATA_DIR, or start one with `drawer serve` or `drawer put`",
@@ -557,6 +586,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Cmd::Memory { action } => memory(&svc, action, &actor, json).await,
         Cmd::Star { path } => set_starred(&svc, &path, true, &actor, json).await,
         Cmd::Unstar { path } => set_starred(&svc, &path, false, &actor, json).await,
         Cmd::Starred => {
@@ -867,6 +897,63 @@ fn print_diff(diff: &str) {
             None => println!("{line}"),
         }
     }
+}
+
+async fn memory(svc: &Drawer, action: MemoryAction, actor: &str, json: bool) -> Result<()> {
+    use crate::vault;
+    match action {
+        MemoryAction::Remember { name, content, tag, append } => {
+            let content = match content {
+                Some(c) => c,
+                None => {
+                    let mut buf = String::new();
+                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
+                    buf
+                }
+            };
+            let out = vault::save(svc, &name, &content, &tag, append, actor).await?;
+            if json {
+                return emit_json(&out);
+            }
+            println!("{} {}", if out["created"] == true { "saved" } else { "updated" }, out["path"].as_str().unwrap_or_default());
+        }
+        MemoryAction::Recall { query, tag, limit } => {
+            let notes = vault::list(svc, tag.as_deref(), query.as_deref(), limit).await?;
+            if json {
+                return emit_json(&notes);
+            }
+            if notes.is_empty() {
+                println!("no memories found");
+            }
+            for n in &notes {
+                let tags: String = n.tags.iter().map(|t| format!(" #{t}")).collect();
+                match n.snippet.as_deref() {
+                    Some(s) if !s.is_empty() => println!("{}{tags}: {s}", n.name),
+                    _ => println!("{}{tags}", n.name),
+                }
+            }
+        }
+        MemoryAction::Read { name } => {
+            let d = vault::get(svc, &name).await?;
+            if json {
+                return emit_json(&d);
+            }
+            print!("{}", d.content);
+            if !d.backlinks.is_empty() {
+                println!("\nbacklinks: {}", d.backlinks.iter().map(|b| format!("[[{}]]", b.name)).collect::<Vec<_>>().join(" "));
+            }
+        }
+        MemoryAction::Tags => {
+            let tags = vault::tags(svc).await?;
+            if json {
+                return emit_json(&tags);
+            }
+            for (t, n) in tags {
+                println!("#{t}  {n}");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn emit_json<T: Serialize>(v: &T) -> Result<()> {

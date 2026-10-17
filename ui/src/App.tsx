@@ -1,6 +1,7 @@
 import { UsersPanel } from "./UsersPanel";
 import { UploadLinksDialog } from "./UploadLinksDialog";
 import { ActivityPanel } from "./ActivityPanel";
+import { MemoryPanel } from "./MemoryPanel";
 import { MountsPanel } from "./MountsPanel";
 import { StoragePanel } from "./StoragePanel";
 import { TransfersPanel } from "./TransfersPanel";
@@ -151,6 +152,7 @@ export function App() {
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [usersManager, setUsersManager] = useState(false);
   const [activityManager, setActivityManager] = useState(false);
+  const [memoryManager, setMemoryManager] = useState(false);
   const [mountManager, setMountManager] = useState(false);
   const [storageManager, setStorageManager] = useState(false);
   const [transferManager, setTransferManager] = useState(false);
@@ -710,6 +712,7 @@ export function App() {
           {navItem("starred", "star", "Starred")}
           {navItem("trash", "trash", "Trash")}
           {currentUser === "admin" && <button type="button" className="nav" title="Users and quotas" aria-label="Users and quotas" onClick={() => setUsersManager(true)}><Icon name="folder" /><span className="nav-label">Users and quotas</span></button>}
+          <button type="button" className="nav" title="Memories" aria-label="Memories" onClick={() => setMemoryManager(true)}><Icon name="star" /><span className="nav-label">Memories</span></button>
           <button type="button" className="nav" title="Activity history" aria-label="Activity history" onClick={() => setActivityManager(true)}><Icon name="clock" /><span className="nav-label">Activity history</span></button>
           {(currentUser === "admin" || currentUser === null) && <button type="button" className="nav" title="Host folders" aria-label="Host folders" onClick={() => setMountManager(true)}><Icon name="folder" /><span className="nav-label">Host folders</span></button>}
           <button type="button" className="nav" title="Storage" aria-label="Storage" onClick={() => setStorageManager(true)}><Icon name="folder" /><span className="nav-label">Storage</span></button>
@@ -862,6 +865,7 @@ export function App() {
       </div>
 
       {usersManager && <UsersPanel close={() => setUsersManager(false)} />}
+      {memoryManager && <MemoryPanel close={() => setMemoryManager(false)} />}
       {activityManager && <ActivityPanel close={() => setActivityManager(false)} />}
       {mountManager && <MountsPanel close={() => { setMountManager(false); void refresh(); }} />}
       {storageManager && <StoragePanel close={() => setStorageManager(false)} />}

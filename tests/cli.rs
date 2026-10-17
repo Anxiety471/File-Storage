@@ -475,3 +475,17 @@ fn backup_schedule_can_be_inspected_without_starting_systemd() {
     assert!(std::fs::read_to_string(units.join("drawer-backup.timer")).unwrap().contains("OnCalendar=daily"));
     assert!(!dir.path().join("store").exists());
 }
+
+#[test]
+fn memory_commands_save_recall_and_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    // `memory remember` starts the store, like `put`.
+    assert!(ok(drawer(data, &["memory", "remember", "Drawer", "A file server #infra", "-t", "project"])).starts_with("saved /memory/Drawer.md"));
+    ok(drawer(data, &["memory", "remember", "people/Alice", "Runs [[Drawer]]"]));
+    assert!(ok(drawer(data, &["memory", "recall", "file server"])).contains("Drawer #project #infra"));
+    assert!(ok(drawer(data, &["memory", "recall", "-t", "project"])).contains("Drawer"));
+    assert!(ok(drawer(data, &["memory", "read", "drawer"])).contains("backlinks: [[Alice]]"));
+    assert!(ok(drawer(data, &["memory", "tags"])).contains("#infra  1"));
+    assert!(fail(drawer(data, &["memory", "read", "nope"])).contains("not found"));
+}

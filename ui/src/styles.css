@@ -391,3 +391,7 @@ tr:hover .row-actions, tr.menu-open .row-actions, .row-actions:focus-within { op
 .operations-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .operations-list progress { width: 100%; }
 button.nav { border: 0; background: none; font: inherit; cursor: pointer; text-align: left; }
+
+.memory-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.memory-tag { height: 28px; padding: 0 12px; font-size: 13px; }
+.memory-meta { display: block; margin-top: 12px; font-size: 12px; color: var(--muted, inherit); opacity: 0.7; }
