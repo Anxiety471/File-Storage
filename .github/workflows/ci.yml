@@ -21,3 +21,54 @@ jobs:
           node-version: 22
       - run: npm ci && npm run build
         working-directory: ui
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate shell scripts and Compose
+        run: |
+          bash -n ops/backup.sh ops/restore.sh
+          python3 ops/test_backup_restore.py
+          cp .env.example .env
+          mkdir -p backups
+          docker compose config -q
+      - name: Build and start Ubuntu container
+        run: docker compose up -d --build
+      - name: Verify health and auth boundary
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8787/auth/me > /tmp/drawer-status.json; then break; fi
+            sleep 2
+          done
+          grep -q '"mode":"password"' /tmp/drawer-status.json
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/drawer/v1/tree?path=/)" = 401
+      - name: Verify backup and restore roundtrip
+        run: |
+          set -euo pipefail
+          token='replace-with-a-different-long-random-token'
+          base='http://127.0.0.1:8787/drawer/v1'
+          curl -fsS -X PUT -H "Authorization: Bearer $token" --data-binary 'before backup' "$base/files?path=/restore-check.txt"
+          bash ops/backup.sh
+          archive="$(find backups -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          test -n "$archive"
+          test -f "$archive.sha256"
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8787/health; then break; fi
+            sleep 2
+          done
+          curl -fsS -X PUT -H "Authorization: Bearer $token" --data-binary 'after backup' "$base/files?path=/restore-check.txt"
+          printf 'RESTORE\n' | bash ops/restore.sh "$archive"
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8787/health; then break; fi
+            sleep 2
+          done
+          test "$(curl -fsS -H "Authorization: Bearer $token" "$base/files?path=/restore-check.txt")" = 'before backup'
+          docker compose exec -T drawer drawer doctor
+      - name: Container logs on failure
+        if: failure()
+        run: docker compose logs --no-color || true
+      - name: Tear down
+        if: always()
+        run: docker compose down

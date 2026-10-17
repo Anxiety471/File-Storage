@@ -14,6 +14,9 @@ One Rust binary serves a REST API, an MCP server and a web UI over the same stor
 
 Agents write files all day and sooner or later one of them overwrites something it shouldn't. Drawer keeps every version, puts deleted things in a trash, and lets two agents share a folder without silently clobbering each other's writes.
 
+For a private Ubuntu file-transfer server, see [deploying Drawer with Docker Compose](docs/deploy.md).
+The personal-server build supports an administrator password, resumable browser uploads, upload folders, and bulk file actions (see the stacked MVP PR).
+
 ## Quickstart
 
 Linux and macOS, one command:

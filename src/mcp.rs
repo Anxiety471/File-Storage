@@ -27,6 +27,7 @@ pub struct DrawerMcp {
     svc: Drawer,
     /// Actor for calls that don't pass `author`; the client's name is used when this is unset.
     author: Option<String>,
+    verified_admin: bool,
     tool_router: ToolRouter<Self>,
 }
 
@@ -43,7 +44,7 @@ impl DrawerMcp {
             tool.title = Some(title.into());
             tool.annotations = Some(ann);
         }
-        Self { svc, author: None, tool_router }
+        Self { svc, author: None, verified_admin: false, tool_router }
     }
 
     /// Record `author` on changes when a call doesn't name one. Empty means unset.
@@ -52,8 +53,15 @@ impl DrawerMcp {
         self
     }
 
+    /// HTTP password mode has one verified identity, regardless of tool arguments.
+    pub fn with_verified_admin(mut self, enabled: bool) -> Self {
+        self.verified_admin = enabled;
+        self
+    }
+
     /// Who a call acts as: its `author`, else the configured author, else the client's name.
     fn actor(&self, author: Option<String>, ctx: &RequestContext<RoleServer>) -> String {
+        if self.verified_admin { return "admin".into(); }
         author
             .filter(|a| !a.trim().is_empty())
             .or_else(|| self.author.clone())

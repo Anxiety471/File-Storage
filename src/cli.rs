@@ -587,14 +587,28 @@ async fn serve(svc: Drawer, data_dir: &Path, args: ServeArgs) -> Result<()> {
         Some(dir) => eprintln!("  ui     {}", dir.display()),
         None => eprintln!("  ui     not built; `cd ui && npm run build` to add it"),
     }
-    if token.is_some() {
+    let password = std::env::var("DRAWER_ADMIN_PASSWORD").ok().filter(|s| !s.is_empty());
+    let secure_cookie = std::env::var("DRAWER_COOKIE_SECURE").is_ok_and(|s| s == "1" || s.eq_ignore_ascii_case("true"));
+    if password.is_some() {
+        eprintln!("  auth   admin password + cookie sessions{}", if token.is_some() { " (machine bearer token enabled)" } else { "" });
+    } else if token.is_some() {
         eprintln!("  auth   bearer token required");
     } else if bound.ip().is_loopback() {
         eprintln!("  auth   none (loopback only)");
     } else {
         eprintln!("  warning: no token set and listening beyond loopback; anyone who can reach this address can read and write");
     }
-    axum::serve(listener, crate::app(svc, token, ui_dir)).await?;
+    let cleanup = svc.clone();
+    cleanup.prune_expired_transfers().await?;
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            if let Err(e) = cleanup.prune_expired_transfers().await {
+                eprintln!("drawer: unable to clean expired transfers: {e}");
+            }
+        }
+    });
+    axum::serve(listener, crate::app_with_auth(svc, token, ui_dir, password, secure_cookie)).await?;
     Ok(())
 }
 
