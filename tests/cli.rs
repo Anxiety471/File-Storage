@@ -289,7 +289,7 @@ fn mcp_config_points_at_this_binary_and_an_absolute_store() {
 #[test]
 fn version_flag_prints_the_crate_version() {
     let out = ok(Command::new(env!("CARGO_BIN_EXE_drawer")).arg("--version").output().unwrap());
-    assert!(out.starts_with("drawer 0.1.3"), "{out}");
+    assert!(out.starts_with("drawer 0.1.2"), "{out}");
 }
 
 #[test]
