@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, MemoryDetail, MemoryNote } from "./api";
 import { MarkdownView } from "./viewers";
+import { MemoryGraph } from "./MemoryGraph";
 
 // Obsidian-style display: hide frontmatter (tags show as chips) and turn [[links]] into in-panel links.
 const prepare = (text: string) => text
@@ -14,6 +15,7 @@ export function MemoryPanel({ close }: { close: () => void }) {
   const [tag, setTag] = useState("");
   const [open, setOpen] = useState<MemoryDetail | null>(null);
   const [error, setError] = useState("");
+  const [view, setView] = useState<"list" | "graph">("graph");
   useEffect(() => { api.memoryTags().then(setTags).catch((e) => setError(String(e))); }, []);
   useEffect(() => { let live = true; api.memoryNotes(query, tag).then((n) => { if (live) setNotes(n); }).catch((e) => { if (live) setError(String(e)); }); return () => { live = false; }; }, [query, tag]);
   const show = (name: string) => { setError(""); api.memoryNote(name).then(setOpen).catch((e) => setError(String(e))); };
@@ -24,6 +26,7 @@ export function MemoryPanel({ close }: { close: () => void }) {
   return <div className="modal-scrim" onMouseDown={close}><section className="modal operations-modal memory-modal" role="dialog" aria-modal="true" aria-labelledby="memory-title" onMouseDown={(e) => e.stopPropagation()}>
     <h3 id="memory-title">Memories</h3><p>Markdown notes AI agents save in /memory. Link notes with [[Note Name]] and tag with #tag.</p>
     {error && <p role="alert">{error}</p>}
+    {!open && <div className="memory-tags"><button className={`btn memory-tag${view === "graph" ? " primary" : ""}`} onClick={() => setView("graph")}>Graph</button><button className={`btn memory-tag${view === "list" ? " primary" : ""}`} onClick={() => setView("list")}>List</button></div>}
     {open ? <div onClick={onClick}>
       <button className="btn" onClick={() => setOpen(null)}>Back to list</button>
       <h4>{open.name}</h4>
@@ -31,7 +34,10 @@ export function MemoryPanel({ close }: { close: () => void }) {
       <MarkdownView source={prepare(open.content)} />
       {open.backlinks.length > 0 && <><h4>Linked from</h4><ul className="operations-list">{open.backlinks.map((b) => <li key={b.path}><a href={`#memory:${encodeURIComponent(b.name)}`}>{b.name}</a></li>)}</ul></>}
       <span className="memory-meta">{open.path} · revision {open.revision} · {open.modified_by}</span>
-    </div> : <>
+    </div> : view === "graph" ? <>
+      <input type="search" placeholder="Filter the graph by name or #tag" aria-label="Filter the graph" value={query} onChange={(e) => setQuery(e.target.value)} />
+      <MemoryGraph open={show} filter={query} />
+    </> : <>
       <input type="search" placeholder="Search memories" aria-label="Search memories" value={query} onChange={(e) => setQuery(e.target.value)} />
       <div className="memory-tags">{tag && <button className="btn memory-tag" onClick={() => setTag("")}>#{tag} ✕</button>}{!tag && tags.map((t) => <button key={t.tag} className="btn memory-tag" onClick={() => setTag(t.tag)}>#{t.tag} {t.count}</button>)}</div>
       <ul className="operations-list">{notes.map((n) => <li key={n.path}><a href={`#memory:${encodeURIComponent(n.name)}`} onClick={(e) => { e.preventDefault(); show(n.name); }}><strong>{n.name}</strong></a>

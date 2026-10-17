@@ -159,7 +159,7 @@ mcp_servers:
 | `opencode` | JSON for `opencode.json` |
 | `json` | an `mcpServers` block for Claude Desktop, Cursor, Windsurf and most others |
 
-The server exposes 25 tools:
+The server exposes 26 tools:
 
 | Tools | |
 | --- | --- |
@@ -168,7 +168,7 @@ The server exposes 25 tools:
 | `drawer_revisions`, `drawer_diff`, `drawer_rollback`, `drawer_copy`, `drawer_move` | history and layout |
 | `drawer_delete`, `drawer_trash`, `drawer_restore`, `drawer_purge` | trash lifecycle |
 | `drawer_star`, `drawer_share`, `drawer_unshare` | stars and grants |
-| `memory_remember`, `memory_recall`, `memory_read`, `memory_tags` | [AI memory vault](#ai-memory-vault) |
+| `memory_remember`, `memory_recall`, `memory_read`, `memory_tags`, `memory_graph` | [AI memory vault](#ai-memory-vault) |
 
 Built for how agents work:
 
@@ -206,7 +206,7 @@ drawer memory read "Project Drawer"     # content, links and backlinks
 drawer memory tags
 ```
 
-**Browsing memories.** The web UI has a **Memories** entry in the sidebar: search, tag chips, rendered notes with clickable `[[links]]` and a "Linked from" list. Or open the same files in the normal file browser under `/memory`.
+**Browsing memories.** The web UI has a **Memories** entry in the sidebar. Its **Graph** view is Obsidian's graph view: every note is a node, every `[[link]]` an edge, colour follows the first tag, size follows how connected a note is, and dashed nodes are notes that are linked but not written yet. Drag, zoom, filter by name or `#tag`, and click a node to open the note. **List** view has search and tag chips; opened notes render with clickable `[[links]]` and a "Linked from" list. The graph is also `GET /drawer/v1/memory/graph` and the `memory_graph` MCP tool. Or open the same files in the normal file browser under `/memory`.
 
 **How an AI saves memories.** Connect it over MCP (see above); the server's instructions tell it to call `memory_recall` before answering and `memory_remember` to save durable facts. Agents without MCP can `PUT /drawer/v1/memory/note` or run `drawer memory remember`.
 
@@ -243,6 +243,7 @@ Base path `/drawer/v1`. Nodes are named by `path=` or `id=`. Mutations name thei
 | GET | `/memory/notes?tag=&q=&limit=` | memory notes, newest first, filtered by tag and/or text |
 | GET / PUT | `/memory/note` | `GET ?name=` returns content, tags, links and backlinks; `PUT {"name","content","tags","append"}` saves a note |
 | GET | `/memory/tags` | every tag with its note count |
+| GET | `/memory/graph` | link graph: `nodes` (note, tags, in/out counts; no `path` for unwritten notes) and `edges` |
 | GET | `/recent?limit=` | live files, most recently changed first, with `modified_by` |
 | GET | `/update` | is a newer release published? `{current, latest, update_available}` |
 | POST | `/update` | install the latest release if newer; the server runs the new version after a restart |

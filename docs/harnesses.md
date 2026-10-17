@@ -13,7 +13,7 @@ Tested clients: the official Python MCP SDK (which Hermes is built on) and the o
 
 ## What harnesses get
 
-- 25 tools: 21 named `drawer_*` for files and 4 named `memory_*` for the Obsidian-style memory vault. Hermes shows them as `mcp_<server>_drawer_*`, Claude Code as `mcp__<server>__drawer_*`.
+- 26 tools: 21 named `drawer_*` for files and 5 named `memory_*` for the Obsidian-style memory vault. Hermes shows them as `mcp_<server>_drawer_*`, Claude Code as `mcp__<server>__drawer_*`.
 - Server instructions explaining revisions, `drawer_edit`, `if_head_revision` and base64. Most harnesses add these to the model's context.
 - Tool titles and annotations. Reads are marked read-only, so harnesses that auto-approve read-only tools can do so. `drawer_purge` is marked destructive. Writes, edits, moves and trash are reversible, because history and the trash keep everything.
 - Attribution without setup. A call with no `author` is recorded under the client's MCP name (`claude-code`, `codex-mcp-client`, `gemini-cli-mcp-client`, `Visual Studio Code`, ...). For stdio, `drawer --author NAME stdio` or `DRAWER_AUTHOR` sets it instead, which helps when several agents of the same harness share a store.

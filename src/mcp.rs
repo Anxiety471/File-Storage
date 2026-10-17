@@ -331,6 +331,7 @@ fn annotations_for(name: &str) -> (&'static str, ToolAnnotations) {
         "memory_recall" => read("Search memories"),
         "memory_read" => read("Read memory"),
         "memory_tags" => read("List memory tags"),
+        "memory_graph" => read("Memory link graph"),
         "memory_remember" => change("Save memory", false, false),
         // gone for good: history included
         "drawer_purge" => change("Delete forever", true, false),
@@ -651,6 +652,11 @@ impl DrawerMcp {
     #[tool(description = "Read a memory note by name, with the notes it links to and the notes that link back to it (backlinks).")]
     async fn memory_read(&self, Parameters(a): Parameters<NoteArg>) -> Result<String, String> {
         json(crate::vault::get(&self.svc, &a.name).await.map_err(|e| e.to_string())?)
+    }
+
+    #[tool(description = "The memory link graph: every note as a node (with its tags and link counts) and every [[link]] as an edge. Notes linked to but not yet written appear as nodes without a path. Use it to see how memories relate and which topics are missing notes.")]
+    async fn memory_graph(&self) -> Result<String, String> {
+        json(crate::vault::graph(&self.svc).await.map_err(|e| e.to_string())?)
     }
 
     #[tool(description = "List every tag used in the memory vault with how many notes use it.")]

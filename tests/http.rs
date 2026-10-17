@@ -907,6 +907,14 @@ async fn memory_vault_links_tags_and_mcp() -> anyhow::Result<()> {
     let tags = json_of(send(&app, get("/drawer/v1/memory/tags")).await).await;
     assert_eq!(tags["tags"].as_array().unwrap().len(), 3);
 
+    let g = json_of(send(&app, get("/drawer/v1/memory/graph")).await).await;
+    assert_eq!(g["nodes"].as_array().unwrap().len(), 2);
+    assert_eq!(g["edges"].as_array().unwrap().len(), 2);
+    let ghost = |b: Value| Request::put("/drawer/v1/memory/note").header("content-type", "application/json").body(Body::from(b.to_string())).unwrap();
+    send(&app, ghost(json!({"name":"Lonely","content":"See [[Missing Note]]"}))).await;
+    let g = json_of(send(&app, get("/drawer/v1/memory/graph")).await).await;
+    assert!(g["nodes"].as_array().unwrap().iter().any(|n| n["name"] == "Missing Note" && n["path"].is_null()));
+
     // The same vault over MCP.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;

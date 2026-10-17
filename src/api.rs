@@ -208,6 +208,7 @@ pub fn router() -> Router<Drawer> {
         .route("/memory/notes", get(crate::vault::list_notes))
         .route("/memory/note", get(crate::vault::read_note).put(crate::vault::save_note))
         .route("/memory/tags", get(crate::vault::list_tags))
+        .route("/memory/graph", get(crate::vault::read_graph))
 }
 
 /// Exactly one of `id` or `path` must name the node.

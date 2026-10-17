@@ -277,6 +277,59 @@ pub async fn get(svc: &Drawer, name: &str) -> Result<Detail> {
     Ok(Detail { note: summary(n, None), revision: n.revision, content: n.text.clone(), links, backlinks })
 }
 
+#[derive(Serialize)]
+pub struct GraphNode {
+    pub id: String,
+    pub name: String,
+    /// Absent for a note that is linked to but doesn't exist yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub tags: Vec<String>,
+    /// Links out of this note and links into it.
+    pub out: usize,
+    pub inbound: usize,
+}
+
+#[derive(Serialize)]
+pub struct Graph {
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<(String, String)>,
+}
+
+/// The whole link graph: one node per note, plus one for each link target that has no note
+/// yet (like Obsidian's unresolved links), and one edge per linked pair.
+pub async fn graph(svc: &Drawer) -> Result<Graph> {
+    let notes = load(svc).await?;
+    let mut nodes: Vec<GraphNode> = notes
+        .iter()
+        .map(|n| GraphNode { id: n.path.clone(), name: stem(&n.path).to_string(), path: Some(n.path.clone()), tags: n.parsed.tags.clone(), out: 0, inbound: 0 })
+        .collect();
+    let mut index: BTreeMap<String, usize> = nodes.iter().enumerate().map(|(i, n)| (n.id.clone(), i)).collect();
+    let mut edges: Vec<(String, String)> = Vec::new();
+    for n in &notes {
+        for t in &n.parsed.links {
+            let target = match resolve(&notes, t) {
+                Some(r) => r.path.clone(),
+                None => {
+                    let id = format!("?{}", t.to_lowercase());
+                    index.entry(id.clone()).or_insert_with(|| {
+                        nodes.push(GraphNode { id: id.clone(), name: t.clone(), path: None, tags: Vec::new(), out: 0, inbound: 0 });
+                        nodes.len() - 1
+                    });
+                    id
+                }
+            };
+            let edge = (n.path.clone(), target);
+            if edge.0 != edge.1 && !edges.contains(&edge) {
+                nodes[index[&edge.0]].out += 1;
+                nodes[index[&edge.1]].inbound += 1;
+                edges.push(edge);
+            }
+        }
+    }
+    Ok(Graph { nodes, edges })
+}
+
 /// Tag counts, most used first.
 pub async fn tags(svc: &Drawer) -> Result<Vec<(String, usize)>> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
@@ -384,6 +437,10 @@ pub struct SaveBody {
 pub async fn save_note(State(s): State<Drawer>, headers: HeaderMap, Json(b): Json<SaveBody>) -> Result<Json<Value>> {
     let actor = headers.get("x-drawer-author").and_then(|v| v.to_str().ok()).filter(|v| !v.is_empty()).unwrap_or("api");
     Ok(Json(save(&s, &b.name, &b.content, &b.tags, b.append, actor).await?))
+}
+
+pub async fn read_graph(State(s): State<Drawer>) -> Result<Json<Graph>> {
+    Ok(Json(graph(&s).await?))
 }
 
 pub async fn list_tags(State(s): State<Drawer>) -> Result<Json<Value>> {
