@@ -5,6 +5,7 @@ pub mod storage;
 pub mod mounts;
 pub mod activity;
 pub mod backup;
+pub mod cleanup;
 pub mod auth;
 pub mod blob;
 pub mod cli;

@@ -345,3 +345,21 @@ Host mount registrations are backed up; their external contents are not. Staged
 uploads are excluded and must be re-uploaded after a restore. Keep snapshots on a
 separate device and protect them like the original store. No retention deletion
 is automatic. `--no-start` writes schedule units for inspection without systemd.
+
+### Offline storage cleanup
+
+Stop Drawer and make a verified backup first. Preview retention candidates with:
+
+```sh
+drawer cleanup --keep-revisions 10 --trash-days 30 --orphan-days 1
+# Apply the same policy explicitly:
+drawer cleanup --keep-revisions 10 --trash-days 30 --orphan-days 1 --apply
+```
+
+Cleanup requires an exclusive store lease. Preview is the default. It permanently
+purges expired trash subtrees and old revisions, retaining each head, the newest
+N revisions and revisions pinned by unexpired download links. Blob collection
+uses references remaining after that policy, so shared/deduplicated content is
+preserved. Only valid SHA-256 blob filenames older than the grace period qualify.
+Metadata commits before unlinks; interrupted removal can leave extra orphans for
+the next run. Recent orphans, temporary files and staged uploads are not deleted.

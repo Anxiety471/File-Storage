@@ -559,3 +559,33 @@ async fn verified_backup_restore_and_exclusive_maintenance() {
     std::fs::write(snapshot.join("drawer.db"), b"corrupt").unwrap();
     assert!(drawer::backup::verify(&snapshot).await.is_err());
 }
+
+#[tokio::test]
+async fn cleanup_preview_preserves_pins_heads_and_shared_blobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let s=Drawer::open(dir.path()).await.unwrap();
+    let first=s.write("/history", b"one", by("api", "")).await.unwrap();
+    s.create_download_link_with_revision(&first.node.id,"api",7,Some(1)).await.unwrap();
+    s.write("/history",b"two",by("api", "")).await.unwrap();
+    s.write("/history",b"three",by("api", "")).await.unwrap();
+    s.write("/history",b"four",by("api", "")).await.unwrap();
+    s.write("/shared",b"two",by("api", "")).await.unwrap();
+    let trash=s.write("/old-trash",b"trash",by("api", "")).await.unwrap();
+    s.trash(Ref::Id(&trash.node.id),None,"api").await.unwrap();
+    drop(s);
+    // Age the trash and physical blobs without changing their contents.
+    let db=sqlx::SqlitePool::connect(&format!("sqlite:{}",dir.path().join("drawer.db").display())).await.unwrap();
+    sqlx::query("UPDATE nodes SET modified_at='2000-01-01T00:00:00.000Z' WHERE trashed=1").execute(&db).await.unwrap(); db.close().await;
+    for folder in std::fs::read_dir(dir.path().join("blobs")).unwrap() { for file in std::fs::read_dir(folder.unwrap().path()).unwrap() { std::fs::File::open(file.unwrap().path()).unwrap().set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()-std::time::Duration::from_secs(3*86400))).unwrap(); } }
+    let mut args=drawer::cleanup::CleanupArgs { keep_revisions:1,trash_days:1,orphan_days:1,apply:false };
+    let preview=drawer::cleanup::cleanup(dir.path(),&args).await.unwrap();
+    assert_eq!(preview.trash_nodes,1); assert_eq!(preview.old_revisions,2); assert_eq!(preview.orphan_blobs,2);
+    assert!(Drawer::open(dir.path()).await.unwrap().read(Ref::Path("/history"),Some(3)).await.is_ok());
+    args.apply=true; drawer::cleanup::cleanup(dir.path(),&args).await.unwrap();
+    let reopened=Drawer::open(dir.path()).await.unwrap();
+    assert_eq!(reopened.read(Ref::Path("/history"),Some(1)).await.unwrap().1,b"one");
+    assert_eq!(reopened.read(Ref::Path("/history"),None).await.unwrap().1,b"four");
+    assert_eq!(reopened.read(Ref::Path("/shared"),None).await.unwrap().1,b"two");
+    assert!(reopened.read(Ref::Path("/history"),Some(3)).await.is_err());
+    assert!(reopened.stat(Ref::Id(&trash.node.id)).await.is_err());
+}

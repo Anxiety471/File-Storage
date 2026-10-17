@@ -51,6 +51,8 @@ pub enum Cmd {
     Stdio,
     /// Install or manage the Linux user background service.
     Service { #[command(subcommand)] action: crate::background::ServiceAction },
+    /// Preview or apply offline retention and orphan-blob cleanup.
+    Cleanup(crate::cleanup::CleanupArgs),
     /// Create, verify, restore and schedule offline snapshots.
     Backup { #[command(subcommand)] action: crate::backup::BackupAction },
     /// Register and manage read-only host folder mounts.
@@ -309,6 +311,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
     };
     if let Cmd::Service { action } = &cmd { return crate::background::run(action, &data_dir); }
     if let Cmd::Backup { action } = &cmd { return crate::backup::cli(action, &data_dir).await; }
+    if let Cmd::Cleanup(args) = &cmd { println!("{}",serde_json::to_string_pretty(&crate::cleanup::cleanup(&data_dir,args).await?)?); return Ok(()); }
     if let Cmd::McpConfig { format, url, name } = &cmd {
         print!("{}", mcp_config(*format, &data_dir, url.as_deref(), name)?);
         return Ok(());
@@ -585,7 +588,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
             if json { emit_json(&grants) } else { println!("removed {principal} from {}", node.path); Ok(()) }
         }
         Cmd::Doctor => doctor(&svc, &data_dir, json).await,
-        Cmd::Backup { .. } | Cmd::Service { .. } | Cmd::McpConfig { .. } | Cmd::Completions { .. } | Cmd::Update { .. } => {
+        Cmd::Cleanup(_) | Cmd::Backup { .. } | Cmd::Service { .. } | Cmd::McpConfig { .. } | Cmd::Completions { .. } | Cmd::Update { .. } => {
             unreachable!("handled before the store is opened")
         }
     }
