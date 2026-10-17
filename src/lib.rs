@@ -1,5 +1,6 @@
 //! Drawer: versioned filesystem storage for agents, over REST and MCP.
 pub mod api;
+pub mod archive;
 pub mod auth;
 pub mod blob;
 pub mod cli;

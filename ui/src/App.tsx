@@ -444,10 +444,7 @@ export function App() {
     },
   });
 
-  const bulkDownload = () => run(async () => {
-    for (const n of chosen.filter((n) => n.kind === "file")) await api.download(n.path);
-    notify("Downloads requested. Your browser may require permission for multiple downloads.");
-  });
+  const bulkDownload = () => run(() => api.downloadArchive(chosen.map((n) => n.id)));
 
   const newFolder = () => {
     setNewMenu(false);
@@ -792,8 +789,8 @@ export function App() {
               {chosen.length > 0 && view.kind !== "trash" && !file && (
                 <div className="bulk-bar">
                   <span>{chosen.length} selected</span>
-                  <button className="btn" type="button" onClick={bulkDownload} disabled={!chosen.some((n) => n.kind === "file")}>
-                    Download files
+                  <button className="btn" type="button" onClick={bulkDownload}>
+                    Download ZIP
                   </button>
                   <button className="btn" type="button" onClick={bulkMove}>Move selected</button>
                   <button className="btn danger" type="button" onClick={bulkTrash}>Move to trash</button>
@@ -825,7 +822,7 @@ export function App() {
                   move={move}
                   copy={copy}
                   share={(n) => setShareTarget(n)}
-                  download={(n) => run(() => api.download(n.path))}
+                  download={(n) => run(() => n.kind === "folder" ? api.downloadArchive([n.id]) : api.download(n.path))}
                   trash={(n) => trash(n)}
                   restore={restore}
                   purge={purge}
@@ -1041,6 +1038,7 @@ function FileTable(props: {
                             <button role="menuitem" onClick={pick(props.move, n)}>
                               <Icon name="move" size={18} /> Move
                             </button>
+                            {n.kind === "folder" && <button role="menuitem" onClick={pick(props.download, n)}><Icon name="download" size={18} /> Download folder as ZIP</button>}
                             {n.kind === "file" && (
                               <>
                                 <button role="menuitem" onClick={pick(props.copy, n)}>

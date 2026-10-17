@@ -174,6 +174,18 @@ export const api = {
   async logout(): Promise<void> {
     await check(await fetch("/auth/logout", { method: "POST", credentials: "same-origin" }));
   },
+  async downloadArchive(ids: string[]): Promise<void> {
+    const url = `${BASE}/archive?ids=${encodeURIComponent(ids.join(","))}`;
+    const status = await api.authStatus().catch(() => null);
+    if (status?.authenticated) {
+      const a = document.createElement("a"); a.href = url; a.download = "selection.zip"; a.click();
+    } else {
+      const response = await check(await fetch(url, { headers: headers() }));
+      const objectUrl = URL.createObjectURL(await response.blob());
+      const a = document.createElement("a"); a.href = objectUrl; a.download = "selection.zip"; a.click();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 10000);
+    }
+  },
   async tree(path: string): Promise<Node[]> {
     const r = await check(await fetch(`${BASE}/tree?${q(path)}`, { headers: headers() }));
     return (await r.json()).entries;

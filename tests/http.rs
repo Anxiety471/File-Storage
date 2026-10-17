@@ -677,3 +677,28 @@ async fn transfer_manager_tracks_pause_resume_completion_and_owner() {
     let other = Request::get("/drawer/v1/transfers").header("x-drawer-author", "other").body(Body::empty()).unwrap();
     assert_eq!(json_of(send(&app, other).await).await["transfers"].as_array().unwrap().len(),0);
 }
+
+#[tokio::test]
+async fn zip_selection_streams_nested_files_and_empty_folders() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Drawer::open(dir.path()).await.unwrap();
+    let opts = drawer::service::WriteOpts::new("api", "");
+    let file = s.write("/folder/nested/a.txt", b"zip content", opts).await.unwrap();
+    s.mkdir("/folder/empty", "api").await.unwrap();
+    let folder = s.stat(drawer::service::Ref::Path("/folder")).await.unwrap();
+    let app = drawer::app(s, None, None);
+    let response = send(&app, get(&format!("/drawer/v1/archive?ids={},{}", folder.id, file.node.id))).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "application/zip");
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let zip = async_zip::base::read::mem::ZipFileReader::new(bytes.to_vec()).await.unwrap();
+    let names: Vec<_> = zip.file().entries().iter().map(|e| e.filename().as_str().unwrap().to_owned()).collect();
+    assert!(names.contains(&"folder/empty/".to_owned()));
+    assert_eq!(names.iter().filter(|n| *n == "folder/nested/a.txt").count(), 1);
+    let index = names.iter().position(|n| n == "folder/nested/a.txt").unwrap();
+    let mut entry = zip.reader_with_entry(index).await.unwrap();
+    let mut content = Vec::new();
+    use futures_lite::io::AsyncReadExt;
+    entry.read_to_end(&mut content).await.unwrap();
+    assert_eq!(content, b"zip content");
+}

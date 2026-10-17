@@ -5,11 +5,13 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
+async_zip = { version = "0.0.18", features = ["tokio", "deflate"] }
 axum = "0.8.9"
 base64 = "0.22"
 chrono = "0.4.45"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 clap_complete = "4.6.11"
+futures-lite = "2.6.1"
 hex = "0.4.3"
 rmcp = { version = "3.5.1", features = ["server", "macros", "transport-streamable-http-server", "transport-io"] }
 schemars = "1.2.3"
